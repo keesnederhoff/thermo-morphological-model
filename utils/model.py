@@ -25,6 +25,10 @@ from xbTools.general.wave_functions import dispersion
 from utils.visualization import block_print, enable_print
 import utils.miscellaneous as um
 
+import logging
+logger = logging.getLogger(__name__)  # module-scoped logger
+
+
 class Simulation():
     
     ################################################
@@ -33,17 +37,28 @@ class Simulation():
     ##                                            ##
     ################################################
     
-    def __init__(self, runid, config_file="config.yaml"):
+    def __init__(self, runid, config_file="config.yaml", proj_dir=None):
         """Initializer of the Simulation class. The runid is assigned, which is then used in the _set_directory method(). It also reads the configuration file.
-        -----
+        ------
         runid: string
             string that contains the name of the folder in the runs directory, which is used for reading inputs and writing outputs.
         config_file: string
-            string that contains the name of the configuration file, default config.yaml, in the runid folder"""
-        self.runid = runid
+            string that contains the name of the configuration file, default config.yaml, in the runid folder
+        proj_dir: string
+            optional project root path, derived from utils/model.py location if not supplied"""
+        
+        # Define parameters
+        self.runid          = runid
+        self.config_file    = config_file
+        self.proj_dir       = str(Path(proj_dir).resolve()) if proj_dir else str(Path(__file__).resolve().parents[1])
+
+        # Read config and set directory
         self.read_config(config_file)
         self._set_directory()
-        
+
+        # Log initialization
+        logger.info("Initialized Simulation run_id=%s proj_dir=%s", self.runid, self.proj_dir)
+
     def __repr__(self) -> str:
         """Provides a string representation of the current simulation."""
         
@@ -59,10 +74,10 @@ class Simulation():
     def _set_directory(self):
         """This method sets up the different directories used during the simulation, i.e. the project directory, the current working directory, the directory
         containing the timeseries related to the forcing, and it creates a result directory with associated files."""
+        
         # set working directory
-        self.proj_dir = os.getcwd()
-        self.cwd = os.path.join(os.getcwd(), 'runs', self.runid)
-        self.ts_dir = os.path.join(self.proj_dir, "database/ts_datasets/")
+        self.cwd        = os.path.join(self.proj_dir, self.runid)
+        self.ts_dir     = os.path.join(self.proj_dir, "database/ts_datasets/")
         
         # change working directory to folder containing the config.yaml file
         os.chdir(self.cwd)    
@@ -94,7 +109,7 @@ class Simulation():
                 super(AttrDict, self).__init__(*args, **kwargs)
                 self.__dict__ = self
                     
-        cwd = os.path.join(os.getcwd(), 'runs', self.runid)
+        cwd = os.path.join(self.proj_dir, self.runid)
                     
         with open(os.path.join(cwd, config_file)) as f:
             cfg = yaml.safe_load(f)
@@ -1882,7 +1897,7 @@ class Simulation():
         # write output at final timestep
         if write:
             self.temperature_timeseries.to_csv(
-                os.path.join(self.result_dir, f"{self.runid}_ground_temperature_timeseries.csv")
+                os.path.join(self.result_dir, f"ground_temperature_timeseries.csv")
             )
             
         return None
@@ -1983,439 +1998,3 @@ class Simulation():
         ax.legend()
                 
         return fig
-    
-    
-    
-    ################################################
-    ##                                            ##
-    ##            # LEGACY CODE                   ##
-    ##                                            ##
-    ################################################
-    
-    # Old nb code
-        # self.nb_distr = np.ones(self.thermal_zgr.shape)
-        # idz = self.config.thermal.grid_resolution * self.config.thermal.nb_switch_depth / self.config.thermal.max_depth
-        # self.nb_distr[:int(idz)] = self.config.thermal.nb_max  # set nb close to surface (nb_max)
-        # self.nb_distr[int(idz):] = self.config.thermal.nb_min  # set nb at greater depth (nb_min)
-    
-    # Old code for writing output:
-            # create directory
-        #     if not os.path.exists(result_dir_timestep):
-        #         os.makedirs(result_dir_timestep)
-                
-        #     # bathymetric variables
-        #     self._check_and_write('xgr', self.xgr, dirname=result_dir_timestep)  # 1D series of x-values
-        #     self._check_and_write('zgr', self.zgr, dirname=result_dir_timestep)  # 1D series of z-values
-        #     self._check_and_write('angles', self.angles, dirname=result_dir_timestep)  # 1D series of angles (in radians)
-            
-        #     # hydrodynamic variables (note: obtained from previous xbeach timestep, so not necessarily accurate with other output data)
-        #     xb_output_path = os.path.join(self.cwd, "xboutput.nc")
-            
-        #     if os.path.isfile(xb_output_path):  # check if an xbeach output file exists (it shouldn't at the first timestep)
-                
-        #         ds = xr.load_dataset(os.path.join(self.cwd, "xboutput.nc"))  # get xbeach data
-                
-        #         self._check_and_write('wave_height', ds.H.values.flatten(), dirname=result_dir_timestep)  # 1D series of wave heights (associated with xgr.txt)
-        #         self._check_and_write('run_up', np.ones(1) * (ds.runup.values.flatten()), dirname=result_dir_timestep)  # single value
-        #         self._check_and_write('storm_surge', np.ones(1) * (self.current_storm_surge), dirname=result_dir_timestep)  # single value
-        #         self._check_and_write('wave_energy', ds.E.values.flatten(), dirname=result_dir_timestep)  # 1D series of wave energies (associated with xgr.txt)
-        #         self._check_and_write('radiation_stress_xx', ds.Sxx.values.flatten(), dirname=result_dir_timestep)  # 1D series of radiation stresses (associated with xgr.txt)
-        #         self._check_and_write('radiation_stress_xy', ds.Sxy.values.flatten(), dirname=result_dir_timestep)  # 1D series of radiation stresses (associated with xgr.txt)
-        #         self._check_and_write('radiation_stress_yy', ds.Syy.values.flatten(), dirname=result_dir_timestep)  # 1D series of radiation stresses (associated with xgr.txt)
-        #         self._check_and_write('mean_wave_angle', ds.thetamean.values.flatten(), dirname=result_dir_timestep)  # 1D series of mean wave angles in radians (associated with xgr.txt)
-        #         self._check_and_write('velocity_magnitude', ds.vmag.values.flatten(), dirname=result_dir_timestep)  # 1D series of velocities (associated with xgr.txt)
-        #         self._check_and_write('orbital_velocity', ds.urms.values.flatten(), dirname=result_dir_timestep)  # 1D series of velocities (associated with xgr.txt)
-                
-        #         ds.close()
-            
-        #     else:        
-        #         self._check_and_write('wave_height', np.zeros(self.xgr.shape), dirname=result_dir_timestep)  # 1D series of wave heights (associated with xgr.txt)
-        #         self._check_and_write('run_up', np.ones(1) * (0), dirname=result_dir_timestep)  # single value
-        #         self._check_and_write('storm_surge', np.ones(1) * (0), dirname=result_dir_timestep)  # single value
-        #         self._check_and_write('wave_energy', np.zeros(self.xgr.shape), dirname=result_dir_timestep)  # 1D series of wave energies (associated with xgr.txt)
-        #         self._check_and_write('radiation_stress_xx', np.zeros(self.xgr.shape), dirname=result_dir_timestep)  # 1D series of radiation stresses (associated with xgr.txt)
-        #         self._check_and_write('radiation_stress_xy', np.zeros(self.xgr.shape), dirname=result_dir_timestep)  # 1D series of radiation stresses (associated with xgr.txt)
-        #         self._check_and_write('radiation_stress_yy', np.zeros(self.xgr.shape), dirname=result_dir_timestep)  # 1D series of radiation stresses (associated with xgr.txt)
-        #         self._check_and_write('mean_wave_angle', np.zeros(self.xgr.shape), dirname=result_dir_timestep)  # 1D series of mean wave angles in radians (associated with xgr.txt)
-        #         self._check_and_write('velocity_magnitude', np.zeros(self.xgr.shape), dirname=result_dir_timestep)  # 1D series of velocities (associated with xgr.txt)
-        #         self._check_and_write('orbital_velocity', np.zeros(self.xgr.shape), dirname=result_dir_timestep)  # 1D series of velocities (associated with xgr.txt)
-            
-        #     # temperature variables
-        #     self._check_and_write('thaw_depth', self.thaw_depth, dirname=result_dir_timestep)  # 1D series of thaw depths
-        #     self._check_and_write('abs_xgr', self.abs_xgr.flatten(), dirname=result_dir_timestep)  # 1D series of x-values (corresponding to ground_temperature_distribution.txt and grount_enthalpy_distribution.txt)
-        #     self._check_and_write('abs_zgr', self.abs_zgr.flatten(), dirname=result_dir_timestep)  # 1D series of z-values (corresponding to ground_temperature_distribution.txt and grount_enthalpy_distribution.txt)
-        #     self._check_and_write('ground_temperature_distribution', self.temp_matrix.flatten(), dirname=result_dir_timestep)  # 1D series of temperature values (associated with abs_xgr.txt and abs_zgr.txt)
-        #     self._check_and_write('ground_enthalpy_distribution', self.enthalpy_matrix.flatten(), dirname=result_dir_timestep)  # 1D series of enthalpy values (associated with abs_xgr.txt and abs_zgr.txt)
-        #     self._check_and_write("2m_temperature", np.ones(1) * (self.current_air_temp), dirname=result_dir_timestep)  # single value
-        #     self._check_and_write("sea_surface_temperature",  np.ones(1) * (self.current_sea_temp), dirname=result_dir_timestep)  # single value
-            
-        #     # heat flux variables
-        #     self._check_and_write('solar_radiation_factor', self.factors, dirname=result_dir_timestep)  # 1D series of factors
-        #     self._check_and_write('solar_radiation_flux', self.sw_flux, dirname=result_dir_timestep)  # 1D series of heat fluxes
-        #     self._check_and_write('long_wave_radiation_flux', np.ones(1) * (self.lw_flux), dirname=result_dir_timestep)  # single value of heat flux
-        #     self._check_and_write('latent_heat_flux',np.ones(1) * (self.latent_flux), dirname=result_dir_timestep)  # single value of heat flux
-        #     self._check_and_write('convective_heat_flux', self.convective_flux, dirname=result_dir_timestep)  # 1D series of heat fluxes
-        #     self._check_and_write('total_heat_flux', self.heat_flux, dirname=result_dir_timestep)  # 1D series of heat fluxes
-            
-        #     # sea ice variables
-        #     self._check_and_write('sea_ice_cover', np.ones(1) * (self.current_sea_ice), dirname=result_dir_timestep)  # single value
-            
-        #     # wind variables
-        #     self._check_and_write('wind_velocity', np.ones(1) * (self.wind_velocity), dirname=result_dir_timestep)  # single value
-        #     self._check_and_write('wind_direction', np.ones(1) * (self.wind_direction), dirname=result_dir_timestep) # single value (degrees, clockwise from the north)
-            
-        #     return None
-        
-    
-        
-    
-    # Old code from determining aggregated matrices (but that turned out to be the wrong order)
-            
-        # # determine which part of the domain is frozen and unfrozen (for the aggregated temperature matrix)
-        # frozen_mask_aggr = (aggregated_temp_matrix < self.config.thermal.T_melt)
-        # unfrozen_mask_aggr = np.ones(frozen_mask_aggr.shape) - frozen_mask_aggr
-        
-        # # determine k-matrix (extend k-distribution with one copied value at the top and bottom boundary to include ghost nodes)
-        # k_frozen_distr_aggr = np.concatenate((
-        #     np.array([self.k_frozen_distr[0]]),
-        #     self.k_frozen_distr,
-        #     np.array([self.k_frozen_distr[-1]])))
-        
-        # k_unfrozen_distr_aggr = np.concatenate((
-        #     np.array([self.k_unfrozen_distr[0]]),
-        #     self.k_frozen_distr,
-        #     np.array([self.k_unfrozen_distr[-1]])))
-        
-        # self.k_matrix = frozen_mask_aggr * np.tile(k_frozen_distr_aggr, (len(self.xgr), 1)) + \
-        #                 unfrozen_mask_aggr * np.tile(k_unfrozen_distr_aggr, (len(self.xgr), 1))
-        
-        # # determine aggregated density matrix
-        # self.soil_density_matrix_aggr = np.hstack((
-        #     self.soil_density_matrix[:,0].reshape((-1, 1)),
-        #     self.soil_density_matrix,
-        #     self.soil_density_matrix[:,-1].reshape((-1, 1)),
-        # ))
-    
-    # Old code from ghost nodes
-    # temperature difference for convective heat transfer (define temperature flux as positive when it is directed into the ground)
-    # temp_diff_at_interface = (air_temp - self.temp_matrix[:,0]) * dry_mask + (sea_temp - self.temp_matrix[:,0]) * wet_mask
-    # # apply boundary conditions
-    # frozen_mask = (self.temp_matrix[:,0] < self.config.thermal.T_melt)
-    # unfrozen_mask = np.ones(frozen_mask.shape) - frozen_mask
-
-    # cfl_matrix = frozen_mask * self.cfl_frozen + unfrozen_mask * self.cfl_unfrozen
-    
-    # calculate the new enthalpy
-        # 1) calculate temperature diffusion
-    # ghost_nodes_enth = self.enthalpy_matrix[:,0] + cfl_matrix * (-self.temp_matrix[:,0] + self.temp_matrix[:,1])
-
-        # 2) add radiation, assuming radiation only influences the dry domain
-    
-    # ghost_nodes_enth += \
-    #     (self.config.model.timestep*3600) * dry_mask * \
-    #     (latent_flux + sw_flux + lw_flux) / \
-    #     (frozen_mask * (0.5 * self.dz) * 1 * 1 * self.config.thermal.rho_soil_frozen + unfrozen_mask * (0.5 * self.dz) * 1 * 1 * self.config.thermal.rho_soil_unfrozen)
-    
-        # 3) add convective heat transfer from water and air
-    # ghost_nodes_enth += \
-    #     (self.config.model.timestep*3600) * \
-    #     temp_diff_at_interface * \
-    #         (frozen_mask * self.config.thermal.k_soil_frozen + unfrozen_mask * self.config.thermal.k_soil_unfrozen) * \
-    #     self.dz / \
-    #         (frozen_mask * (0.5 * self.dz) * 1 * 1 * self.config.thermal.rho_soil_frozen + unfrozen_mask * (0.5 * self.dz) * 1 * 1 * self.config.thermal.rho_soil_unfrozen)
-    
-    # determine the temperature distribution
-    # ghost_nodes_temperature = \
-    #     frozen_mask * \
-    #         (ghost_nodes_enth / (self.config.thermal.c_soil_frozen / self.config.thermal.rho_soil_frozen)) + \
-    #     unfrozen_mask * \
-    #         (ghost_nodes_enth - \
-    #         (self.config.thermal.c_soil_unfrozen - self.config.thermal.c_soil_frozen) / self.config.thermal.rho_soil_frozen * self.config.thermal.T_melt - \
-    #         self.config.thermal.L_water_ice / self.config.thermal.rho_ice * self.config.thermal.nb) \
-    #             / (self.config.thermal.c_soil_unfrozen / self.config.thermal.rho_soil_unfrozen)
-    
-    
-    # Old code from solar flux calculator:
-    # def solar_flux_calculator(self, timestep_id, I0, timezone_diff):
-    #     """
-    #     This function calculates the effective solar radiation flux on a sloped surface. The method from Buffo (1972) is used, 
-    #     assuming that the radiaton on the surface already includes the atmospheric transmission coefficient. Using the radiation data for a flat surface 
-    #     and the angle of the incoming rays with the flat sruface, the intensity of the incoming rays can be estimated, which can then be projected on an inclined
-    #     surface.
-
-    #     Args:
-    #         timestep_id (int): index of the current timestep.
-    #         I0 (float): incoming radiation for the current timestep on a flat surface
-    #         timezone_diff (float): difference in hours for the timezone which is modelled relative to UTC.
-
-    #     Returns:
-    #         array: incoming radiation for sloped surfaces for the computational domain for the current timestep.
-    #     """       
-    #     # 1) current timestamp
-    #     current_timestamp = self.timestamps[timestep_id]
-        
-    #     # 2) latitude and orientation
-    #     phi = self.config.model.latitude / 360 * 2 * np.pi
-    #     beta = (90 - self.model.grid_orientation) / 360 * 2 * np.pi
-        
-    #     # 3) local angles
-    #     alpha = -self.angles 
-        
-    #     # 4) declination, Sarbu (2017)
-    #     delta = 23.45 * np.sin(
-    #         (360/365 * (284 + current_timestamp.dayofyear)) / 360 * 2 * np.pi
-    #         )
-        
-    #     # 5) hour angle, for Alaska timezone difference w.r.t. UTC is -8h
-    #     local_hour_of_day = current_timestamp.hour + timezone_diff
-    #     # convert to hour angle
-    #     h = (((local_hour_of_day - 12) % 24)/24) * 2 * np.pi
-    #     # convert angles to range [-pi, pi]
-    #     mask = np.nonzero(h>=np.pi)
-    #     h[mask] = -((2 * np.pi) - h[mask])
-        
-    #     # 6) calculate altitude angle off of the horizontal that the suns rays strike a horizontal surface
-    #     A = np.arcsin(np.sin(phi) * np.sin(delta) + np.cos(phi) * np.cos(delta) * np.cos(h))
-        
-    #     # 7) calculate the azimuth
-    #     AZ = np.cos(delta) * (np.sin(h)) / np.cos(A)
-        
-    #     # correct azimuth for when close to solstices (“Central Beaufort Sea Wave and Hydrodynamic Modeling Study Report 1: Field Measurements and Model Development,” n.d.)
-    #     ew_AM_mask = np.nonzero((np.cos(h) > np.tan(delta) / np.tan(phi)) + (local_hour_of_day <= 12))# east-west AM mask
-    #     ew_PM_mask = np.nonzero((np.cos(h) > np.tan(delta) / np.tan(phi)) + (local_hour_of_day > 12))# east-west PM mask
-
-    #     AZ[ew_AM_mask] = -np.pi + np.abs(AZ[ew_AM_mask])
-    #     AZ[ew_PM_mask] = np.pi - np.abs(AZ[ew_PM_mask])
-        
-    #     # convert to azimuth measured clockwise from the east
-    #     Z = np.arcsin(np.cos(delta) * np.sin(h) / np.cos(A)) + 1/2 * np.pi
-
-    #     # 8) calculate multiplication factor for computational domain
-    #     sin_theta = np.sin(A) * np.cos(alpha) - np.cos(A) * np.sin(alpha) * np.sin(Z - beta)
-    #     # # filter out values larger than 1 (this is only relevant when theta is actually calculated with the arcsin())
-    #     # sin_theta[np.nonzero(sin_theta>1)] = 1
-    #     # # filter out values smaller than 0 (these do not reach the surface)
-    #     # sin_theta[np.nonzero(sin_theta<0)] = 0
-        
-    #     # 9) calculate multiplication factor for flat surface
-    #     sin_0 = np.sin(A) * np.cos(0) - np.cos(A) * np.sin(0) * np.sin(Z - beta)
-    #     # # filter out values larger than 1 (this is only relevant when theta is actually calculated with the arcsin())
-    #     # sin_0[np.nonzero(sin_0>1)] = 1
-    #     # # filter out values smaller than 0 (these do not reach the surface)
-    #     # sin_0[np.nonzero(sin_0<0)] = 0
-        
-    #     # 10) in order to avoid very peaky scales, let us take the daily maximum and use that for scaling.
-    #     sin_theta_2d = sin_theta[:-1].reshape((-1, 24))
-    #     sin_theta_daily_max_2d = np.max(sin_theta_2d, axis=1)
-    #     sin_theta_daily_max = np.repeat(sin_theta_daily_max_2d.flatten(), 24)
-
-    #     sin_0_2d = sin_0[:-1].reshape((-1, 24))
-    #     sin_0_daily_max_2d = np.max(sin_0_2d, axis=1)
-    #     sin_0_daily_max = np.repeat(sin_0_daily_max_2d.flatten(), 24)
-        
-    #     # 10) compute corrected values for incoming solar radiation
-    #     I_theta = sin_theta / sin_0 * I0
-        
-    #     return I_theta
-    
-        # # slope aspect clockwise from the north
-        # beta = (90 - self.config.model.grid_orientation) / 360 * 2 * np.pi
-        
-        # A = np.arcsin(np.sin(phi) * np.sin(delta) + np.cos(phi) * np.cos(delta) * np.cos(h))
-        
-        # # calculate azimuth
-        # AZ = np.arcsin(-np.cos(delta) * np.sin(h) / np.cos(A))
-        
-        # # need to correct for when close to solstices
-        # if np.cos(h) <= np.tan(delta) / np.tan(phi):
-        #     if local_hour_of_day <= 12:
-        #         AZ = -np.pi + np.abs(AZ)
-        #     else:
-        #         AZ = np.pi - AZ
-        
-        # # calculate Z
-        # Z = AZ + 1/2 * np.pi
-        
-        # # calculate angle between the surface and the radiation
-        # theta = np.arcsin(np.sin(A) * np.cos(alpha) - np.cos(A) * np.sin(alpha) * np.sin(Z - beta))
-        
-        # # calculate angle-corrected radiation
-        # I = I0_p * np.sin(theta)
-                
-        # return I
-        
-    
-    # Old code to start xbeach:
-            
-        # os.system('start "" "' + str(os.path.join(params_path, batch_fname)) + '"')
-        
-        # First a batch file is generated to be executed
-        # xb_run_script_win(
-        #     xb=self.xb_setup,
-        #     N=1,
-        #     maindir=self.cwd,
-        #     xbeach_exe=xbeach_path
-        #     )
-        
-        # command = ['"' + str(os.path.join(self.cwd, batch_fname)) + '"']
-
-        # # get the return code 
-        # stdout, stderr = process.communicate()
-        # return_code = process.returncode
-        
-        # error_message = stderr.decode()
-        # print(error_message)
-    
-    
-    # Old storm timing function
-    # def _when_storms_projection(self, fp_storm):
-        
-    #     # determine when storms occur (using raw_datasets/erikson/Hindcast_1981_2/BTI_WavesAndStormSurges_1981-2100.csv)
-    #     st = np.zeros(self.T.shape)  # array of the same shape as t (0 when no storm, 1 when storm)
-        
-    #     self.conditions = np.zeros(self.T.shape, dtype=object)  # also directly read wave conditions here
-        
-    #     with open(fp_storm) as f:
-            
-    #         df = pd.read_csv(f)
-            
-    #         mask = (df.time >= self.t_start) * (df.time <= self.t_end)
-            
-    #         df = df[mask]
-            
-    #     mask = 
-        
-    #     for storm_time in df.time.values:
-            
-    #         index = np.argwhere(self.timestamps==storm_time)
-            
-    #         st[index] = 1
-            
-    #         self.conditions[t] = {
-    #                    "Hso(m)": data["Hso(m)"],
-    #                    "Hs(m)": data["Hs(m)"],
-    #                    "Dp(deg)": data["Dp(deg)"],
-    #                    "Tp(s)": data["Tp(s)"],
-    #                    "SS(m)": data["SS(m)"],
-    #                    "Hindcast_or_projection": data["Hindcast_or_projection"]
-    #                     }  # safe storm conditions for this timestep as well
-            
-    #         for index, data in df.iterrows():
-                
-    #             duration = int(data["Storm_duration(days)"] * 24)  # in hours
-                
-    #             day = 0
-                
-    #             for hour in range(duration+1):
-                    
-    #                 day = hour // 24
-    #                 hour = hour % 24
-                    
-    #                 if data.start_date_of_storm_month in [1, 3, 5, 7, 8, 10, 12] and data.start_date_of_storm_day + day > 31:
-    #                     month_length = 31
-    #                     end_of_month_storm = 1
-    #                 elif data.start_date_of_storm_month in [4, 6, 9, 11] and data.start_date_of_storm_day + day > 30:
-    #                     month_length = 30
-    #                     end_of_month_storm = 1
-    #                 elif data.start_date_of_storm_month in [2]:
-    #                     if data.start_date_of_storm_year in np.arange(1940, 2200, 4) and data.start_date_of_storm_day + day > 29:
-    #                         month_length = 29
-    #                         end_of_month_storm = 1
-    #                     elif data.start_date_of_storm_day + day > 28:
-    #                         month_length = 28
-    #                         end_of_month_storm = 1
-    #                 else:
-    #                     month_length = 0
-    #                     end_of_month_storm = 0
-                    
-    #                 print("day: ", day)
-    #                 print("hour: ", hour)
-                    
-    #                 timestamp = datetime(
-    #                     data.start_date_of_storm_year, 
-    #                     data.start_date_of_storm_month + end_of_month_storm, 
-    #                     data.start_date_of_storm_day + day - month_length, 
-    #                     hour,  # assume storms always start at 00:00:00 during the day
-    #                     0, 
-    #                     0
-    #                     )
-
-    #                 t = np.argmax((timestamp == self.timestamps))  # we get the current timestep here
-                    
-    #                 st[t] += 1  #  make sure xbeach will be active for this timestep
-                                        
-                    
-    #     return st
-            
-    # part of old thaw depth method:        
-    #   # get the number of grid points for each 1D model where the temperature exceeds the melting point (counted from the top until the first un-thawed point), 
-        # normalize with the total number of points, and multiply with the total grid length.
-        # self.thaw_depth = count_nonzero_until_zero((self.temp_matrix > self.config.thermal.T_melt)) / self.config.thermal.grid_resolution * self.config.thermal.max_depth
-    
-    # Also part of old thaw depth method (but a second iteration):
-    # # determine in which interval to look for thaw depth
-        # dx_min = np.min(self.xgr[1:] - self.xgr[:-1])
-        # # loop through x-coordinates, and find thaw depth for each coordinate
-        # for i in range(len(self.xgr)):
-        #     # selection of points to look at for current grid coordinate
-        #     mask = (x_matrix.flatten() > self.xgr[i] - 0.5 * dx_min) * (x_matrix.flatten() < self.xgr[i] + 0.5 * dx_min)
-        #     # look at masked temperature matrix, use that to determine which points are thawed, and use the point with the highest z coordinate to calculate
-        #     # the thaw depth
-        #     self.thaw_depth[i] = self.zgr - np.max(self.zgr.flatten()[mask][self.temp_matrix.flatten()[mask] < self.config.thermal.T_melt])
-                
-            
-    # def run_simulation(self):
-    #     pass       
-    
-
-
-    # def write_xbeach_output(self, output_path, save_path):
-    #     """
-    #     Running this function writes the xbeach output file (i.e., morphological update) to the wrapper.
-    #     --------------------------
-    #     output_path: str
-    #         string containing the file path to the xbeach output from the project directory
-    #     save_path: str
-    #         string containing the save path for the morphological update
-    #     --------------------------
-    #     """
-        
-        
-
-    #     # Save output file
-    #     np.savetxt(os.path.join(save_path, "morph.txt"))
-        
-    #     return 
-
-
-
-
-# def generate_params(config):
-#     """
-#     This function takes the config variable and generates a params.txt file
-#     """
-    
-#     with open('params.txt', 'w') as f:
-#         f.write("---------- \n")
-#         f.write("\n")
-#         f.write("XBEACH")
-#         f.write(f"date [YYYY-MM-DD HH:MM:SS.XXXXXX]: {datetime.now()} \n")
-#         f.write("function: generate_params() \n")
-#         f.write("\n")
-#         f.write("---------- \n")
-#         f.write("\n")
-        
-#         f.write("---------- \n")
-#         f.write("-GRID INPUT- \n")
-#         f.write("\n")
-#         f.write(f"nx = {config.model.nx} \n")
-#         f.write(f"ny = {config.model.ny} \n")
-
-#         f.write("---------- \n")
-
-#         f.write("-NUMERICS INPUT- \n")
-
-        
-#     f = open(' params.txt', 'r')
-    
-#     return f

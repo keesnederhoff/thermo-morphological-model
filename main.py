@@ -11,6 +11,28 @@ from utils.model import Simulation
 from utils.bathymetry import generate_schematized_bathymetry
 from utils.miscellaneous import textbox, datetime_from_timestamp
 
+import argparse, logging, logging.handlers, sys
+
+# --- Simple logger setup (new) ---
+logger = logging.getLogger("thermo_model")
+logger.setLevel(logging.INFO)
+
+def setup_logger(sim):
+    if logger.handlers:
+        return
+    log_file = os.path.join(sim.cwd, "run.log")
+    fmt = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
+    ch = logging.StreamHandler()
+    fh = logging.FileHandler(log_file, mode="w", encoding="utf-8")
+    ch.setFormatter(fmt)
+    fh.setFormatter(fmt)
+    logger.addHandler(ch)
+    logger.addHandler(fh)
+# ---------------------------------
+
+def _setup_logging(level: str, run_id: str, log_file: Path | None):
+    root = logging.getLogger()
+    root.setLevel(getattr(logging, level))
 
 def main(sim):
     """run this function to perform a simulation
@@ -18,13 +40,15 @@ def main(sim):
     Args:
         sim (Simulation): instance of the Simulation class
     """
+
+    setup_logger(sim)
+    # Start time
     t_start = time.time()
-    
-    print(textbox("INITIALIZING SIMULATION"))
-    print(f"{repr(sim)}")
-    
+
+    logger.info('Initilizing Arctic-XBeach')
+
     config = sim.config
-    print("succesfully read configuration")
+    logger.debug("Succesfully read configuration")
 
     # read temporal parameters
     sim.set_temporal_params(
@@ -32,23 +56,23 @@ def main(sim):
         config.model.time_end,
         config.model.timestep
         )
-    print("succesfully set temporal parameters")
+    logger.debug("Succesfully set temporal parameters")
         
     # load in forcing data
     sim.load_forcing(
         os.path.join(sim.proj_dir, sim.config.data.forcing_data_path)
     )
-    print("succesfully loaded forcing")
+    logger.debug("Succesfully loaded forcing")
     
     # load hydrodynamic forcing
     sim.initialize_hydro_forcing(
         os.path.join(sim.proj_dir, sim.config.data.storm_data_path),
         )
-    print("succesfully loaded hydrodynamic forcing")
+    logger.debug("Succesfully loaded hydrodynamic forcing")
     
     # this variable is used to determine if xbeach should be ran for each timestep (not looking at 2% runup yet)
     xb_times = sim.timesteps_with_xbeach_active()
-    print("succesfully generated xbeach times")
+    logger.debug("Succesfully generated xbeach times")
     
     # generate schematized bathymetry
     if sim.config.bathymetry.with_schematized_bathymetry:
@@ -80,7 +104,7 @@ def main(sim):
         np.savetxt("x.grd", xgr)
         np.savetxt("bed.dep", zgr)
         
-        print("succesfully generated schematized bathymetry")
+        logger.info("Succesfully generated schematized bathymetry")
     
     
     # generate initial grid files and save them
@@ -89,11 +113,11 @@ def main(sim):
         bathy_path=sim.config.bathymetry.depfile,
         bathy_grid_path=sim.config.bathymetry.xfile
         )
-    print("succesfully generated grid")
+    logger.debug("Succesfully generated grid")
     
     # initialize xbeach module
     sim.initialize_xbeach_module()
-    print("succesfully initialized xbeach module")
+    logger.debug("Succesfully initialized xbeach module")
     
     # initialize first xbeach timestep
     if sim.config.xbeach.with_xbeach:
@@ -103,7 +127,7 @@ def main(sim):
     
     # initialize thermal model
     sim.initialize_thermal_module()
-    print("succesfully initialized thermal module")
+    logger.debug("Succesfully initialized thermal module")
     
     # initialize solar flux calculator
     if sim.config.thermal.with_solar_flux_calculator:
@@ -115,14 +139,13 @@ def main(sim):
             t_start=sim.config.thermal.t_start,
             t_end=sim.config.thermal.t_end,
             )
-    print("succesfully initialized solar flux calculator\n")
+    logger.debug("Succesfully initialized solar flux calculator")
     
     # show CFL values (they have already been checked to be below 0.5)
-    print(textbox("CFL VALUES (for 1D thermal models)"))
-    print(f"current maximum CFL: {np.max(sim.cfl_matrix):.4f}\n")
+    logger.debug(f"Current maximum CFL {np.max(sim.cfl_matrix):.4f}")
 
     # loop through (xbeach) timesteps
-    print(textbox("STARTING SIMULATION"))
+    logger.info("Starting Arctic-XBeach")
     
     ################################################
     ##                                            ##
@@ -130,17 +153,32 @@ def main(sim):
     ##                                            ##
     ################################################
     
+    last_progress_info = -1  # new: track last percentage (integer) logged at 5% intervals
     for timestep_id in np.arange(len(sim.T)):
         
-        print(f"timestep {timestep_id+1}/{len(sim.T)}")
-        
+        # Count timesteps
+        logger.debug(f"Timestep {timestep_id+1}/{len(sim.T)}")
+
+        # Track progress
+        if timestep_id > 0:
+            elapsed = time.time() - t_start
+            avg_step_time = elapsed / timestep_id
+            remaining_steps = len(sim.T) - (timestep_id + 1)
+            eta_seconds = avg_step_time * remaining_steps
+            progress_pct = int(((timestep_id + 1) / len(sim.T)) * 100)
+            if progress_pct % 1 == 0 and progress_pct != last_progress_info:
+                eta_hours = eta_seconds / 3600
+                if eta_hours < 1:
+                    logger.info(f"Progress {progress_pct}% | avg_step={avg_step_time:.1f}s | ETA ~ {eta_hours * 60:.2f}min")
+                else:
+                    logger.info(f"Progress {progress_pct}% | avg_step={avg_step_time:.1f}s | ETA ~ {eta_hours:.2f}h")
+                last_progress_info = progress_pct
+
         # write output variables to output file every output interval
         if timestep_id in sim.temp_output_ids:
-            
             sim.write_output(timestep_id, t_start)
-            
-            print("sucessfully generated output")
-            
+            logger.debug("Succesfully generated output")
+
         # used for validation of the temperature model
         if 'save_ground_temp_layers' in sim.config.output.keys():
             
@@ -166,7 +204,7 @@ def main(sim):
              # generate params.txt file 
             sim.xbeach_setup(timestep_id)
             
-            print(f"starting xbeach for timestep {sim.timestamps[timestep_id]}")
+            logger.info(f"Starting xbeach for timestep {sim.timestamps[timestep_id]}")
             
             # call xbeach (could include batch file?)
             run_succesful = sim.start_xbeach(
@@ -176,17 +214,16 @@ def main(sim):
             
             try:
                 if run_succesful:
-                    print(f"succesfully ran xbeach for timestep {sim.timestamps[timestep_id]} to {sim.timestamps[timestep_id+1]}")
+                    logger.info(f"succesfully ran xbeach for timestep {sim.timestamps[timestep_id]} to {sim.timestamps[timestep_id+1]}")
                 else:
-                    print(f"failed to run xbeach for timestep {sim.timestamps[timestep_id]} to {sim.timestamps[timestep_id+1]}")
+                    logger.error(f"failed to run xbeach for timestep {sim.timestamps[timestep_id]} to {sim.timestamps[timestep_id+1]}")
             except IndexError:
-                # index error occurs when xbeach is called during the final time step, this catches it
-                print(f"xbeach ran succesfully for final timestep timestep ({sim.timestamps[timestep_id]})")
+                logger.info(f"xbeach ran succesfully for final timestep timestep ({sim.timestamps[timestep_id]})")
                         
             # if this was one of the first storms, the output is of higher temporal resolution and it is saved in the results folder
             if sim.copy_this_xb_output:
                 sim.copy_xb_output_to_result_dir(fp_xbeach_output="xboutput.nc")
-                print("succesfully generated high resolution storm output")
+                logger.info("succesfully generated high resolution storm output")
                 
             # check if xbeach should be ran for the next timestep (if so, the x-grid doesn't update since the same grid is necessary for the hotstart feature)
             if sim.config.xbeach.with_xbeach and timestep_id + 1 < len(sim.T):
@@ -209,17 +246,14 @@ def main(sim):
         # calculate the current thaw depth
         sim.find_thaw_depth()
             
-        print()
-    
     # write xbeach timesteps
     sim.write_xb_timesteps()
-
-    print(textbox("SIMULATION FINISHED"))
-    print(f"{repr(sim)}")
-    print(f"Simulation started at: {datetime_from_timestamp(t_start)}")
-    print(f"Simulation finished at: {datetime_from_timestamp(time.time())}")
-    print(f"Total simulation time: {(time.time() - t_start) / 3600:.1f} hours")
-    
+    logger.info('Arctic-XBeach Finished!')
+    logger.info(f"Simulation started at: {datetime_from_timestamp(t_start)}")
+    logger.info(f"Simulation finished at: {datetime_from_timestamp(time.time())}")
+    logger.info(f"Total simulation time: {(time.time() - t_start) / 1:.1f} seconds")
+    logger.info(f"Total simulation time: {(time.time() - t_start) / 60:.1f} minutes")
+    logger.info(f"Total simulation time: {(time.time() - t_start) / 3600:.1f} hours")
     return sim.xgr, sim.zgr
 
 if __name__ == '__main__':
@@ -235,9 +269,13 @@ if __name__ == '__main__':
 
     # set the 'runid' to the model run that you would like to perform
     runid = sys.argv[1]
-    
-    # initialize simulation
-    sim = Simulation(runid)
+
+    # new: ensure project root (folder containing this main.py) on sys.path
+    proj_dir = Path(__file__).parent.resolve()
+    if str(proj_dir) not in sys.path:
+        sys.path.insert(0, str(proj_dir))
+
+    # initialize simulation with explicit proj_dir
+    sim = Simulation(runid, proj_dir=proj_dir)
 
     main(sim)
-    
