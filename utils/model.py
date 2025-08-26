@@ -25,6 +25,10 @@ from xbTools.general.wave_functions import dispersion
 from utils.visualization import block_print, enable_print
 import utils.miscellaneous as um
 
+from netCDF4 import Dataset
+import numpy as np
+from pathlib import Path
+
 import logging
 logger = logging.getLogger(__name__)  # module-scoped logger
 
@@ -55,6 +59,10 @@ class Simulation():
         # Read config and set directory
         self.read_config(config_file)
         self._set_directory()
+
+        # Set writing
+        self.nc_writer      = None
+        self._t0_seconds    = None  # base for "time" coord
 
         # Log initialization
         logger.info("Initialized Simulation run_id=%s proj_dir=%s", self.runid, self.proj_dir)
@@ -244,6 +252,29 @@ class Simulation():
             (0 if "sensitivity" not in self.config.keys() else self.config.sensitivity.term_2m_air_temperature)
         
         return None
+    
+    def _ensure_nc_writer(self):
+        if self.nc_writer is not None:
+            return
+        # choose an xbeach x-grid. If none yet, use current wet part of xgr.
+        xgr_xb = None
+        xb_path = os.path.join(self.cwd, "xboutput.nc")
+        if os.path.exists(xb_path):
+            try:
+                _ds = xr.load_dataset(xb_path).squeeze()
+                xgr_xb = _ds.x.values
+                _ds.close()
+            except Exception:
+                pass
+        if xgr_xb is None or len(xgr_xb) == 0:
+            xgr_xb = self.xgr[np.nonzero(self.zgr <= 0)]
+        depth_id = np.arange(self.config.thermal.grid_resolution, dtype=np.int32)
+
+        out_nc = os.path.join(self.result_dir, "results.nc")
+        tstart_str = str(self.timestamps[0])
+        self.nc_writer = NCAppender(out_nc, self.xgr, depth_id, xgr_xb.astype("f4"), tstart=tstart_str)
+        self._t0_seconds = float((self.timestamps[0] - pd.Timestamp(self.timestamps[0])) / pd.Timedelta("1s"))
+
     
     ################################################
     ##                                            ##
@@ -957,9 +988,9 @@ class Simulation():
         nb = np.zeros(N)
         z = np.linspace(0, max_depth, N)
 
-        mid = (nb_max_depth + nb_min_depth) / 2
+        mid = (nb_max_depth + nb_min_depth) / 2;
             
-        nb = (1 / (1 + np.exp(-(z - mid) * 10 / (nb_min_depth - nb_max_depth)))) * (nb_min - nb_max) + nb_max
+        nb = (1 / (1 + np.exp(-(z - mid) * 10 / (nb_min_depth - nb_max_depth)))) * (nb_min - nb_max) + nb_max;
         
         nb[np.argwhere(z<=nb_max_depth)] = nb_max
         nb[np.argwhere(z>=nb_min_depth)] = nb_min
@@ -1508,6 +1539,7 @@ class Simulation():
         
         return None
         
+        
     def _update_angles(self):
         """This function geneartes an array of local angles (in radians) for the grid, based on the central differences method.
         """
@@ -1603,7 +1635,8 @@ class Simulation():
         # can't have negative factors (which may occur in winter when the angle between light rays and a flat surface is negative but between light rays and inclined surface (facing southward) is positive)
         self.solar_flux_map[np.nonzero(self.solar_flux_map < 0)] = 0
             
-        np.savetxt(os.path.join(self.result_dir, 'solar_flux_map.txt'), self.solar_flux_map)
+        # dont believe there is a need for this    
+        #np.savetxt(os.path.join(self.result_dir, 'solar_flux_map.txt'), self.solar_flux_map)
         
         return self.solar_flux_map
     
@@ -1757,100 +1790,103 @@ class Simulation():
     ################################################
         
     def write_output(self, timestep_id, t_start):
-        """This function writes output in the results folder, and creates subfolders for each timestep for which results are output.
-        """        
-        # create dataset
-        result_ds = xr.Dataset(
-            coords={
-                "xgr":self.xgr,  # 1D series of x-values
-                "depth_id":np.arange(self.config.thermal.grid_resolution),  # 1D series of id's representing the node number (zero meaning surface, one the first node below surface, etc.)
-                }
-            )
-        
-        # time variables
-        result_ds['timestep_id'] = timestep_id
-        result_ds['timestamp'] = self.timestamps[timestep_id]
-        result_ds['cumulative_computational_time'] = time.time() - t_start
-        
-        # bathymetric variables
-        result_ds["zgr"] = (["xgr"], self.zgr)  # 1D series of z-values
-        result_ds["angles"] = (["xgr"], self.angles)  # 1D series of angles (in radians)
-        
-        # hydrodynamic variables (note: obtained from xbeach output from previous timestep, so not necessarily accurate with other output data)
-        if timestep_id and os.path.exists(os.path.join(self.cwd, "xboutput.nc")) and self.xbeach_times[timestep_id-1]:  # check if an xbeach output file exists (it shouldn't at the first timestep)
-            
-            ds = xr.load_dataset(os.path.join(self.cwd, "xboutput.nc")).squeeze()  # get xbeach data
-            ds = ds.sel(globaltime=np.max(ds.globaltime.values))  # select only the final timestep
-            
-            # determine the x coordinates from the computational grid
-            xgr_xb = ds.x.values
-            
-            # use x coordinates from the computational grid instead of global values
-            result_ds = result_ds.assign_coords(xgr_xb=xgr_xb)
+        """Append one time-slice to results.nc."""
+        self._ensure_nc_writer()
 
-            result_ds['wave_height'] = (["xgr_xb"], ds.H.values.flatten())  # 1D series of wave heights (associated with xgr.txt)
-            result_ds['zb'] = (["xgr_xb"], ds.zb.values.flatten()) # 1D series of bed levels
-            result_ds['zs'] = (["xgr_xb"], ds.zs.values.flatten()) # 1D series of water levels
-            result_ds['wave_energy'] = (["xgr_xb"], ds.E.values.flatten())  # 1D series of wave energies (associated with xgr.txt)
-            result_ds['radiation_stress_xx'] = (["xgr_xb"], ds.Sxx.values.flatten())  # 1D series of radiation stresses (associated with xgr.txt)
-            result_ds['radiation_stress_xy'] = (["xgr_xb"], ds.Sxy.values.flatten())  # 1D series of radiation stresses (associated with xgr.txt)
-            result_ds['radiation_stress_yy'] = (["xgr_xb"], ds.Syy.values.flatten())  # 1D series of radiation stresses (associated with xgr.txt)
-            # result_ds['mean_wave_angle'] = (["xgr_xb"], ds.thetamean.values.flatten())  # 1D series of mean wave angles in radians (associated with xgr.txt)
-            result_ds['velocity_magnitude'] = (["xgr_xb"], ds.vmag.values.flatten())  # 1D series of velocities (associated with xgr.txt)
-            result_ds['orbital_velocity'] = (["xgr_xb"], ds.urms.values.flatten())  # 1D series of velocities (associated with xgr.txt                
-        
-            ds.close()
-            
+        # time index and seconds since t0
+        if "time" in self.nc_writer.v:
+            i = len(self.nc_writer.v["time"])  # next index
         else:
-            
-            xgr_xb = self.xgr[np.nonzero(self.zgr <= 0)]
-            
-            result_ds = result_ds.assign_coords(xgr_xb=xgr_xb)
-            
-            for varname in ['wave_height', 'wave_energy', 'zb', 'zs',
-                            'radiation_stress_xx', 'radiation_stress_xy', 'radiation_stress_yy', 
-                            'mean_wave_angle', 'velocity_magnitude', 'orbital_velocity']:
-                result_ds[varname] = (["xgr_xb"], np.zeros(xgr_xb.shape))
-        
-        # water level
-        result_ds['water_level'] = self._update_water_level(timestep_id)
-        
-        # computed 2% runup
-        result_ds['beta_f'] = self.beta_f[timestep_id]
-        result_ds['run_up2%'] = self.R2[timestep_id]
-        
-        # temperature variables
-        result_ds['thaw_depth'] = (["xgr"], self.thaw_depth)  # 1D series of thaw depths
-        result_ds['abs_xgr'] = (["xgr", "depth_id"], self.abs_xgr)  # 1D series of x-values (corresponding to ground_temperature_distribution.txt and grount_enthalpy_distribution.txt)
-        result_ds['abs_zgr'] = (["xgr", "depth_id"], self.abs_zgr)  # 1D series of z-values (corresponding to ground_temperature_distribution.txt and grount_enthalpy_distribution.txt)
-        result_ds['ground_temperature_distribution'] = (["xgr", "depth_id"], self.temp_matrix)  # 2D grid of temperature values (associated with abs_xgr.txt and abs_zgr.txt)
-        result_ds['ground_enthalpy_distribution'] = (["xgr", "depth_id"], self.enthalpy_matrix)  # 2D grid of enthalpy values (associated with abs_xgr.txt and abs_zgr.txt)
-        result_ds['nb'] = (["xgr", "depth_id"], self.nb_matrix)  # 2D grid of nb values
-        result_ds['k'] = (["xgr", "depth_id"], self.k_matrix)  # 2D grid of k values
-        result_ds['rho'] = (["xgr", "depth_id"], self.soil_density_matrix)  # 2D grid of density values
-        result_ds['2m_temperature'] = self.current_air_temp  # single value
-        result_ds['sea_surface_temperature'] = self.current_sea_temp  # single value
-        
-        # heat flux variables
-        result_ds['solar_radiation_factor'] = (["xgr"], self.factors)  # 1D series of factors
-        result_ds['solar_radiation_flux'] = (["xgr"], self.sw_flux)  # 1D series of heat fluxes
-        result_ds['long_wave_radiation_flux'] = (["xgr"], self.lw_flux)  # 1D series of heat fluxes
-        result_ds['latent_heat_flux'] = (["xgr"], self.latent_flux)  # 1D series of heat fluxes
-        result_ds['convective_heat_flux'] = (["xgr"], self.convective_flux)  # 1D series of heat fluxes
-        result_ds['total_heat_flux'] = (["xgr"], self.heat_flux)  # 1D series of heat fluxes
-        
-        # sea ice variables
-        result_ds['sea_ice_cover'] = self.current_sea_ice  # single value
-        
-        # wind variables
-        result_ds['wind_velocity'] = self.wind_velocity  # single value
-        result_ds['wind_direction'] = self.wind_direction  # single value (degrees, clockwise from the north)
-        
-        result_ds.to_netcdf(os.path.join(self.result_dir, (10 - len(str(int(timestep_id)))) * '0' + str(int(timestep_id)) + ".nc"))
-        
-        result_ds.close()
-        
-        return None
+            i = 0
+        t_now = float((self.timestamps[timestep_id] - self.timestamps[0]) / pd.Timedelta("1s"))
+        t_rel = t_now - self._t0_seconds
+
+        # --- hydrodynamics on xbeach grid ---
+        # Robustly get xgr_xb from nc_writer, fallback to self.xgr if missing/empty
+        try:
+            xgr_xb = self.nc_writer.v["xgr_xb"][:]
+            if xgr_xb is None or len(xgr_xb) == 0:
+                xgr_xb = self.xgr
+        except Exception:
+            xgr_xb = self.xgr
+
+        xb_ok = bool(timestep_id and os.path.exists(os.path.join(self.cwd, "xboutput.nc")) and self.xbeach_times[timestep_id-1])
+        if xb_ok:
+            ds = xr.load_dataset(os.path.join(self.cwd, "xboutput.nc")).squeeze()
+            ds = ds.sel(globaltime=np.max(ds.globaltime.values))
+            # pad/truncate helper
+            def fit1(a, L):
+                a = np.asarray(a).ravel().astype("f4")
+                if len(a) == L: return a
+                out = np.full((L,), np.nan, dtype="f4")
+                out[:min(L,len(a))] = a[:min(L,len(a))]
+                return out
+            H    = fit1(ds.H.values,    len(xgr_xb))
+            zb   = fit1(ds.zb.values,   len(xgr_xb))
+            zs   = fit1(ds.zs.values,   len(xgr_xb))
+            E    = fit1(ds.E.values,    len(xgr_xb))
+            Sxx  = fit1(ds.Sxx.values,  len(xgr_xb))
+            Sxy  = fit1(ds.Sxy.values,  len(xgr_xb))
+            Syy  = fit1(ds.Syy.values,  len(xgr_xb))
+            vmag = fit1(ds.vmag.values, len(xgr_xb))
+            urms = fit1(ds.urms.values, len(xgr_xb))
+            ds.close()
+        else:
+            Z = np.zeros_like(xgr_xb, dtype="f4")
+            H=zb=zs=E=Sxx=Sxy=Syy=vmag=urms = Z
+
+        # water level on xgr
+        wl_line = np.asarray(self._update_water_level(timestep_id), dtype="f4")
+        if wl_line.ndim == 0:  # if scalar returned, expand to xgr
+            wl_line = np.full((len(self.xgr),), wl_line, dtype="f4")
+
+        # pack 2D thermo fields (xgr, depth_id)
+        gt  = self.temp_matrix.astype("f4")
+        ge  = self.enthalpy_matrix.astype("f4")
+        nb  = self.nb_matrix.astype("f4")
+        k   = self.k_matrix.astype("f4")
+        rho = self.soil_density_matrix.astype("f4")
+
+        # append
+        self.nc_writer.append(i, {
+            "time": t_rel,
+            "timestep_id":  int(timestep_id),
+            "cumtime":      float(time.time() - t_start),
+            "zgr": self.zgr.astype("f4"),
+            "angles": self.angles.astype("f4"),
+            "abs_xgr": self.abs_xgr.astype("f4"),
+            "abs_zgr": self.abs_zgr.astype("f4"),
+            "wave_height": H,
+            "zb": zb,
+            "zs": zs,
+            "wave_energy": E,
+            "radiation_stress_xx": Sxx,
+            "radiation_stress_xy": Sxy,
+            "radiation_stress_yy": Syy,
+            "velocity_magnitude": vmag,
+            "orbital_velocity": urms,
+            "water_level": wl_line,
+            "beta_f": float(self.beta_f[timestep_id]),
+            "run_up2pct": float(self.R2[timestep_id]),
+            "ground_temperature_distribution": gt,
+            "ground_enthalpy_distribution":    ge,
+            "nb":  nb,
+            "k":   k,
+            "rho": rho,
+            "solar_radiation_factor": self.factors.astype("f4"),
+            "solar_radiation_flux":   self.sw_flux.astype("f4"),
+            "long_wave_radiation_flux": self.lw_flux.astype("f4"),
+            "latent_heat_flux":       self.latent_flux.astype("f4"),
+            "convective_heat_flux":   self.convective_flux.astype("f4"),
+            "total_heat_flux":        self.heat_flux.astype("f4"),
+            "thaw_depth":             self.thaw_depth.astype("f4"),
+            "air_temperature_2m":     float(self.current_air_temp),
+            "sea_surface_temperature":float(self.current_sea_temp),
+            "sea_ice_cover":          float(self.current_sea_ice),
+            "wind_velocity":          float(self.wind_velocity),
+            "wind_direction":         float(self.wind_direction),
+        })
+
     
     def save_ground_temp_layers_in_memory(self, timestep_id, layers=[], heat_fluxes=[], write=False):
         """This function saves the ground temperature directly into a single dataframe, 
@@ -1889,7 +1925,7 @@ class Simulation():
             
         else:
             
-            # add temperature and heat fluxes to dataframe
+            # add temperature and heat fluxs to dataframe
             self.temperature_timeseries = self.temperature_timeseries._append(
                 dict(zip(col_names, values)), ignore_index=True
             )
@@ -1998,3 +2034,126 @@ class Simulation():
         ax.legend()
                 
         return fig
+
+
+
+
+
+class NCAppender:
+    """
+    Create results.nc (once) and append a single time-slice each timestep.
+    Dimensions are fixed-length except 'time', which is unlimited.
+    """
+    
+    # ini netcdf
+    def __init__(self, path, xgr: np.ndarray, depth_id: np.ndarray, xgr_xb: np.ndarray, tstart: str = "1970-01-01T00:00:00"):
+        self.path   = Path(path)
+        create      = True
+        self.ds     = Dataset(self.path, "w", format="NETCDF4")         # overwrite old netcdf
+
+        # Define all
+        if create:
+
+            # dimensions
+            self.ds.createDimension("time", None)                       # unlimited
+            self.ds.createDimension("xgr", int(len(xgr)))
+            self.ds.createDimension("depth_id", int(len(depth_id)))
+            self.ds.createDimension("xgr_xb", int(len(xgr_xb)))
+
+            # coordinate variables
+            v = self.ds.createVariable("time", "f8", ("time",))     # seconds since tstart
+            v.units = f"seconds since {tstart}"
+            v.calendar = "standard"
+            v = self.ds.createVariable("xgr", "f4", ("xgr",));              v[:] = xgr.astype("f4")
+            v = self.ds.createVariable("depth_id", "i4", ("depth_id",));    v[:] = depth_id.astype("i4")
+            v = self.ds.createVariable("xgr_xb", "f4", ("xgr_xb",));        v[:] = xgr_xb.astype("f4")
+
+            # helper to make time-varying vars
+            def v1(name, dims_tail, dtype="f4", **kw):
+                return self.ds.createVariable(name, dtype, ("time",) + tuple(dims_tail), zlib=True, complevel=3, **kw)
+
+            # time/meta
+            self.v = {
+                "time":         self.ds.variables["time"],
+                "timestep_id":  v1("timestep_id", (), "i4"),
+                "cumtime":      v1("cumtime", (), "f4"),
+            }
+
+            # geometry (time-varying to allow morphodynamics)
+            self.v["zgr"]    = v1("zgr", ("xgr",))
+            self.v["angles"] = v1("angles", ("xgr",))
+            self.v["abs_xgr"] = v1("abs_xgr", ("xgr","depth_id"))
+            self.v["abs_zgr"] = v1("abs_zgr", ("xgr","depth_id"))
+
+            # hydrodynamics on xbeach grid
+            for name, dims in {
+                "wave_height": ("xgr_xb",),
+                "zb": ("xgr_xb",),
+                "zs": ("xgr_xb",),
+                "wave_energy": ("xgr_xb",),
+                "radiation_stress_xx": ("xgr_xb",),
+                "radiation_stress_xy": ("xgr_xb",),
+                "radiation_stress_yy": ("xgr_xb",),
+                "velocity_magnitude": ("xgr_xb",),
+                "orbital_velocity": ("xgr_xb",),
+            }.items():
+                self.v[name] = v1(name, dims)
+
+            # water/runup scalars & xgr fields
+            self.v["water_level"] = v1("water_level", ("xgr",))
+            self.v["beta_f"]      = v1("beta_f", ())
+            self.v["run_up2pct"]  = v1("run_up2pct", ())
+
+            # thermo (xgr, depth_id)
+            for name in ("ground_temperature_distribution","ground_enthalpy_distribution","nb","k","rho"):
+                self.v[name] = v1(name, ("xgr","depth_id"))
+
+            # fluxes on xgr
+            for name in ("solar_radiation_factor","solar_radiation_flux","long_wave_radiation_flux",
+                         "latent_heat_flux","convective_heat_flux","total_heat_flux","thaw_depth"):
+                self.v[name] = v1(name, ("xgr",))
+
+            # forcings (scalars)
+            for name, dtype in {
+                "air_temperature_2m": "f4",
+                "sea_surface_temperature": "f4",
+                "sea_ice_cover": "f4",
+                "wind_velocity": "f4",
+                "wind_direction": "f4",
+            }.items():
+                self.v[name] = v1(name, (), dtype)
+
+        else:
+            # reopen handles
+            self.v = {name: self.ds.variables[name] for name in self.ds.variables}
+
+    # Reopening netcdf
+    def _reopen(self):
+        # Only reopen if self.ds is None
+        if getattr(self, "ds", None) is None:
+            self.ds = Dataset(self.path, "a", format="NETCDF4")
+            self.v = {name: self.ds.variables[name] for name in self.ds.variables}
+
+    # Appending netcdf
+    def append(self, i: int, arrays: dict):
+        """
+        i: index in the time dimension to write
+        arrays: mapping var_name -> np.ndarray or scalar
+        Shapes must match variable dims (excluding 'time').
+        """
+        self._reopen()
+        for name, data in arrays.items():
+            var = self.v[name]
+            if var.ndim == 1:          # ("time",)
+                var[i] = data
+            elif var.ndim == 2:        # ("time", X)
+                var[i, :] = data
+            elif var.ndim == 3:        # ("time", X, Y)
+                var[i, :, :] = data
+            else:
+                var[i, ...] = data
+
+    # Closing netcdf
+    def close(self):
+        self.ds.sync()
+        self.ds.close()

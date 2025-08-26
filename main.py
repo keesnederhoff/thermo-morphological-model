@@ -45,7 +45,7 @@ def main(sim):
     # Start time
     t_start = time.time()
 
-    logger.info('Initilizing Arctic-XBeach')
+    logger.info('Initializing Arctic-XBeach')
 
     config = sim.config
     logger.debug("Succesfully read configuration")
@@ -169,9 +169,9 @@ def main(sim):
             if progress_pct % 1 == 0 and progress_pct != last_progress_info:
                 eta_hours = eta_seconds / 3600
                 if eta_hours < 1:
-                    logger.info(f"Progress {progress_pct}% | avg_step={avg_step_time:.1f}s | ETA ~ {eta_hours * 60:.2f}min")
+                    logger.info(f"Progress {progress_pct}% | avg_step={avg_step_time:.1f}s | {sim.timestamps[timestep_id]} | ETA ~ {eta_hours * 60:.2f}min")
                 else:
-                    logger.info(f"Progress {progress_pct}% | avg_step={avg_step_time:.1f}s | ETA ~ {eta_hours:.2f}h")
+                    logger.info(f"Progress {progress_pct}% | avg_step={avg_step_time:.1f}s | {sim.timestamps[timestep_id]} | ETA ~ {eta_hours:.2f}h")
                 last_progress_info = progress_pct
 
         # write output variables to output file every output interval
@@ -254,6 +254,10 @@ def main(sim):
     logger.info(f"Total simulation time: {(time.time() - t_start) / 1:.1f} seconds")
     logger.info(f"Total simulation time: {(time.time() - t_start) / 60:.1f} minutes")
     logger.info(f"Total simulation time: {(time.time() - t_start) / 3600:.1f} hours")
+    # Add this line to ensure NetCDF is closed and flushed
+    if sim.nc_writer is not None:
+        sim.nc_writer.close()
+
     return sim.xgr, sim.zgr
 
 if __name__ == '__main__':

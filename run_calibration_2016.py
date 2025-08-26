@@ -10,6 +10,6 @@ if str(proj_dir) not in sys.path:
     sys.path.insert(0, str(proj_dir))
 
 # Run simulation
-sim = Simulation("runs/20250822_validation_runs/run001_val_gt22_v3", proj_dir=proj_dir)
+sim = Simulation("runs/20250822_calibration_runs/run000_cal_gt61_testing/", proj_dir=proj_dir)
 main(sim)
 
