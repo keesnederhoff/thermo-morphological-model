@@ -17,31 +17,32 @@ import argparse, logging, logging.handlers, sys
 logger = logging.getLogger("thermo_model")
 logger.setLevel(logging.INFO)
 
-def setup_logger(sim):
+def setup_logger(sim, print_to_screen=True):
     if logger.handlers:
         return
     log_file = os.path.join(sim.cwd, "run.log")
     fmt = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
-    ch = logging.StreamHandler()
     fh = logging.FileHandler(log_file, mode="w", encoding="utf-8")
-    ch.setFormatter(fmt)
     fh.setFormatter(fmt)
-    logger.addHandler(ch)
     logger.addHandler(fh)
+    if print_to_screen:
+        ch = logging.StreamHandler()
+        ch.setFormatter(fmt)
+        logger.addHandler(ch)
 # ---------------------------------
 
 def _setup_logging(level: str, run_id: str, log_file: Path | None):
     root = logging.getLogger()
     root.setLevel(getattr(logging, level))
 
-def main(sim):
-    """run this function to perform a simulation
+def main(sim, print_to_screen=True):
+    """Run this function to perform a simulation
 
     Args:
         sim (Simulation): instance of the Simulation class
     """
 
-    setup_logger(sim)
+    setup_logger(sim, print_to_screen)
     # Start time
     t_start = time.time()
 
@@ -153,7 +154,7 @@ def main(sim):
     ##                                            ##
     ################################################
     
-    last_progress_info = -1  # new: track last percentage (integer) logged at 5% intervals
+    last_progress_info = -1  # Track last percentage logged at 5% intervals
     for timestep_id in np.arange(len(sim.T)):
         
         # Count timesteps
@@ -166,7 +167,7 @@ def main(sim):
             remaining_steps = len(sim.T) - (timestep_id + 1)
             eta_seconds = avg_step_time * remaining_steps
             progress_pct = int(((timestep_id + 1) / len(sim.T)) * 100)
-            if progress_pct % 1 == 0 and progress_pct != last_progress_info:
+            if progress_pct % 5 == 0 and progress_pct != last_progress_info:
                 eta_hours = eta_seconds / 3600
                 if eta_hours < 1:
                     logger.info(f"Progress {progress_pct}% | avg_step={avg_step_time:.1f}s | {sim.timestamps[timestep_id]} | ETA ~ {eta_hours * 60:.2f}min")
@@ -240,7 +241,6 @@ def main(sim):
         
         # loop through thermal subgrid timestep
         for subgrid_timestep_id in np.arange(0, config.model.timestep * 3600, config.thermal.dt):
-            
             sim.thermal_update(timestep_id, subgrid_timestep_id)
             
         # calculate the current thaw depth
@@ -266,6 +266,12 @@ if __name__ == '__main__':
     ##| cd C:\Users\bruij_kn\OneDrive - Stichting Deltares\Documents\GitHub\thermo-morphological-model
     ##| python main.py run_id
     
+    # Parser
+    parser = argparse.ArgumentParser(description="Run the Arctic-XBeach simulation.")
+    parser.add_argument("runid", help="The run ID for the simulation.")
+    parser.add_argument("--no-screen-log", action="store_true", help="Disable logging to the screen.")
+    args = parser.parse_args()
+
     # reduce ipython cache size to free up memory
     ipython = get_ipython()
     if ipython:
@@ -282,4 +288,5 @@ if __name__ == '__main__':
     # initialize simulation with explicit proj_dir
     sim = Simulation(runid, proj_dir=proj_dir)
 
-    main(sim)
+    # Pass the argument to main
+    main(sim, print_to_screen=not args.no_screen_log)

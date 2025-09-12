@@ -13,18 +13,30 @@ from netCDF4 import Dataset
 import netCDF4
 import warnings
 import matplotlib.pyplot as plt
+import optuna
+import gc  # Import garbage collection module
+import ray
+
 warnings.filterwarnings(
     "ignore",
     message="'squared' is deprecated in version 1.4 and will be removed in 1.6. To calculate the root mean squared error, use the function'root_mean_squared_error'."
 )
+import os
+
+# Ensure child processes use 'spawn' start method early (Windows-safe)
+try:
+    multiprocessing.set_start_method("spawn", force=True)
+except Exception:
+    # if
+    #  already set or unsupported, ignore
+    pass
 
 # Parameter ranges
 param_ranges = {
-    "max_depth": [15, 15],                              # 15m kind of in the middle
+    "max_depth": [10, 30],                              # 15m kind of in the middle
     "T_melt": [270.4185, 275.8815],                     # a bit large of a range
-    "N_thaw_threshold": [2, 40],                        # seems ok, shouldnt have a influence i think
     "L_water_ice": [267200, 400800],                    # might be to high (330000-336000 range chatGPT)
-    "rho_water": [800, 1200],                           # might be too high (1000-1030 range chatGPT)
+    "rho_water": [1000, 1030],                          # might be too high (1000-1030 range chatGPT)
     "rho_ice": [917*0.9, 917*1.1],                      # should be 917 (not 971 as Kevin used)
     "rho_particle": [2120, 3180],                       # seems to high (2400-2900)
     "nb_min": [0.25, 0.78],                             # 0.30-0.55
@@ -39,10 +51,10 @@ param_ranges = {
 }
 
 # Settings
-base_sim_dir    = Path(r'd:\Git\thermo-morphological-model\runs\20250822_calibration_runs\run004_iterations\base')
-run_root_dir    = Path(r'd:\Git\thermo-morphological-model\runs\20250822_calibration_runs\run004_iterations')
-n_parallel      = 16
-n_epochs        = 200
+base_sim_dir    = Path(r'd:\Git\thermo-morphological-model\runs\20250822_calibration_runs\run006_iterations_automated\base')
+run_root_dir    = Path(r'd:\Git\thermo-morphological-model\runs\20250822_calibration_runs\run006_iterations_automated')
+n_parallel      = 1
+n_epochs        = 48        # maybe try 300 later?
 make_figure     = True
 
 # 24 hours => 48 epochs since 30 minute per epoch
@@ -61,7 +73,7 @@ def sample_params():
     
     # Overwrite some of them
     params["grid_resolution"] = params["max_depth"] * 10
-    
+
     # Done
     return params
 
@@ -107,7 +119,7 @@ def to_native_datetime(dt):
 def run_simulation(sim_dir):
     proj_dir = Path(__file__).parent.resolve()
     sim = Simulation(str(sim_dir), proj_dir=proj_dir)
-    main(sim)
+    main(sim, print_to_screen=False)
     nc_path = None
     try:
 
@@ -243,10 +255,49 @@ def run_simulation(sim_dir):
         # Attempt to remove the NetCDF file after processing (ignore failures)
         try:
             if nc_path is not None and nc_path.exists():
-                nc_path.unlink()
+                #nc_path.unlink()
+                print('not removing anything anymore')
         except Exception:
             pass
     return rmse
+
+# Optuna objective moved to module level so it is picklable by multiprocessing
+def objective(trial):
+    # Sample parameters using Optuna according to param_ranges
+    params = {}
+    for k, v in param_ranges.items():
+        if v[0] == v[1]:
+            params[k] = v[0]
+        elif isinstance(v[0], int) and isinstance(v[1], int):
+            params[k] = trial.suggest_int(k, int(v[0]), int(v[1]))
+        else:
+            params[k] = trial.suggest_float(k, float(v[0]), float(v[1]))
+    
+    # Derived parameter
+    params["grid_resolution"] = params["max_depth"] * 10
+
+    # Create unique sim dir for this trial
+    sim_dir = run_root_dir / f"optuna_trial_{trial.number:06d}"
+    if sim_dir.exists():
+        shutil.rmtree(sim_dir)
+    shutil.copytree(base_sim_dir, sim_dir)
+    update_config_yaml(sim_dir, params)
+
+    # Run simulation and get RMSE
+    rmse = run_simulation(sim_dir)
+
+    # Attach some user-attrs (optional)
+    trial.set_user_attr("sim_dir", str(sim_dir))
+    trial.set_user_attr("rmse", float(rmse))
+
+    # Log trial results to calibration_prints.txt
+    with open(print_log, "a", encoding="utf-8") as f:
+        f.write(f"Trial {trial.number} completed.\n")
+        f.write(f"  Parameters: {params}\n")
+        f.write(f"  RMSE: {rmse}\n")
+        f.write(f"  Simulation directory: {sim_dir}\n")
+
+    return float(rmse)
 
 # Define worker
 def worker(args):
@@ -262,63 +313,89 @@ def worker(args):
 
 # Main
 if __name__ == "__main__":
-    best_params = None
-    best_rmse = float('inf')
-
     # Prepare result file paths and ensure root dir exists
     run_root_dir.mkdir(parents=True, exist_ok=True)
     results_csv = run_root_dir / "calibration_results.csv"
     print_log   = run_root_dir / "calibration_prints.txt"
 
+    # Ensure sqlite uses WAL for concurrent writers (needed for optuna multiprocessing)
+    try:
+        import sqlite3
+        db_path = (run_root_dir / 'optuna_study.db').as_posix()
+        con = sqlite3.connect(db_path)
+        con.execute('PRAGMA journal_mode=WAL;')
+        con.close()
+    except Exception:
+        pass
+
+    # Multiprocessing start method already set at module import time above.
+
     # Initialize/clear print log start line
     with open(print_log, "a", encoding="utf-8") as f:
         f.write(f"Calibration run started: {__import__('datetime').datetime.now()}\n")
 
-    for epoch in range(n_epochs):
-        # sample parameters for this epoch
-        param_list = [sample_params() for _ in range(n_parallel)]
-        # compute global indices so folders are unique across epochs (e.g., 0..79 for 5*16)
-        start_idx = epoch * n_parallel
-        global_indices = list(range(start_idx, start_idx + n_parallel))
-        args = list(zip(global_indices, param_list))
-        with multiprocessing.Pool(n_parallel) as pool:
-            results = pool.map(worker, args)
+    # Create Optuna study with SQLite storage so multi-process optimization is possible
+    storage_url = f"sqlite:///{(run_root_dir / 'optuna_study.db').as_posix()}"
+    study = optuna.create_study(
+        study_name="calibration_optuna",
+        direction="minimize",
+        storage=storage_url,
+        load_if_exists=True
+    )
 
-        # Collect rows for this epoch to append to CSV
-        rows = []
+    # Determine number of trials
+    n_trials = int(n_epochs) * int(n_parallel)
+
+    # Run optimization (n_jobs controls concurrency)
+    try:
+        study.optimize(objective, n_trials=n_trials, n_jobs=n_parallel, callbacks=[
+            lambda study, trial: gc.collect()  # Force garbage collection after each trial
+        ])
+    except KeyboardInterrupt:
+        print("Optimization interrupted by user.")
         with open(print_log, "a", encoding="utf-8") as f:
-            f.write(f"\nEpoch {epoch+1}/{n_epochs} results:\n")
-            for sim_idx, params, rmse in results:
-                # Keep best
-                if rmse < best_rmse:
-                    best_rmse = rmse
-                    best_params = params
-                    best_sim_idx = sim_idx
-                # Build flat row: copy params, add sim_idx, epoch (1-based), rmse
-                row = params.copy()
-                row['sim_idx'] = int(sim_idx)
-                row['epoch']   = int(epoch + 1)
-                row['rmse']    = float(rmse)
-                rows.append(row)
-                # Write short per-sim line to print log
-                f.write(f"  sim_idx={sim_idx}, epoch={epoch+1}, rmse={rmse:.6f}\n")
+            f.write("Optimization interrupted by user.\n")
 
-        # Append rows to CSV (create header if file doesn't exist)
-        df_epoch = pd.DataFrame(rows)
-        header_flag = not results_csv.exists()
-        df_epoch.to_csv(results_csv, mode='a', header=header_flag, index=False)
-
-        # Write epoch summary to print log
+    # After optimization: export trials to CSV
+    try:
+        df = study.trials_dataframe()
+        # Convert any complex objects to strings if needed
+        df.to_csv(results_csv, index=False)
+    except Exception as e:
         with open(print_log, "a", encoding="utf-8") as f:
-            f.write(f"Epoch {epoch+1}/{n_epochs} best RMSE so far: {best_rmse} (simulation #{best_sim_idx})\n")
+            f.write(f"Failed to write trials dataframe: {e}\n")
 
-        print(f"Epoch {epoch+1}/{n_epochs} best RMSE: {best_rmse} (simulation #{best_sim_idx})")
+    # Final summary and best params
+    best_trial = study.best_trial
+    best_params = best_trial.params
+    best_rmse = best_trial.value
 
-    # Final summary
     with open(print_log, "a", encoding="utf-8") as f:
         f.write(f"\nCalibration finished: {__import__('datetime').datetime.now()}\n")
         f.write(f"Best parameters found: {best_params}\n")
-        f.write(f"Best simulation number: {best_sim_idx}\n")
+        f.write(f"Best trial number: {best_trial.number}\n")
+        f.write(f"Best RMSE: {best_rmse}\n")
 
+    # Ensure the best-found values are printed to the console as well
     print("Best parameters found:", best_params)
-    print("Best simulation number:", best_sim_idx)
+    print("Best trial number:", best_trial.number)
+    print("Best RMSE:", best_rmse)
+
+    # Explicitly run garbage collection at the end
+    gc.collect()
+
+    ray.init()
+
+    @ray.remote
+    def run_trial(trial_number, storage_url):
+        study = optuna.create_study(
+            study_name="calibration_optuna",
+            direction="minimize",
+            storage=storage_url,
+            load_if_exists=True
+        )
+        study.optimize(objective, n_trials=1, n_jobs=1)
+
+    tasks = [run_trial.remote(i, storage_url) for i in range(n_trials)]
+    ray.get(tasks)
+    ray.shutdown()

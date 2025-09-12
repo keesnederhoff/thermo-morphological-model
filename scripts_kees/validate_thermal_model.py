@@ -7,15 +7,14 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
 # Settings
-outdir = Path(r'd:\Git\thermo-morphological-model\runs\20250822_validation_runs\run001_val_gt22_v3\\analysis')
+outdir = Path(r'd:\Git\thermo-morphological-model\runs\20250822_validation_runs\run002_kevin_values\analysis')
 outdir.mkdir(exist_ok=True)
 mpl.rcdefaults()
-
 ## Part 1 - Load data
 df_erikson = pd.read_csv(r'd:\Git\thermo-morphological-model\database\ts_datasets\ground_temperature_erikson.csv', parse_dates=['time'])
 
 # Part 2A - load in model output data
-df_model = pd.read_csv(r'd:\Git\thermo-morphological-model\runs\20250822_validation_runs\run001_val_gt22_v3\results\ground_temperature_timeseries.csv', parse_dates=['time'])
+df_model = pd.read_csv(r'd:\Git\thermo-morphological-model\runs\20250822_validation_runs\run002_kevin_values\results\ground_temperature_timeseries.csv', parse_dates=['time'])
 colnames = ['air_temp[K]', 'temp_0.0m[K]', 'temp_0.5m[K]', 'temp_1.0m[K]', 'temp_2.0m[K]', 'temp_2.95m[K]']
 for colname in colnames:
     df_model[f'{colname[:-3]}[C]'] = df_model[colname] - 273.15

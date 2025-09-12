@@ -26,8 +26,10 @@ from utils.visualization import block_print, enable_print
 import utils.miscellaneous as um
 
 from netCDF4 import Dataset
-import numpy as np
 from pathlib import Path
+
+from numba import njit
+import numpy as np
 
 import logging
 logger = logging.getLogger(__name__)  # module-scoped logger
@@ -1119,7 +1121,7 @@ class Simulation():
         ground_temp_distr_wet = um.interpolate_points(wet_points[:,0], wet_points[:,1], n)
         
         return ground_temp_distr_dry, ground_temp_distr_wet
-        
+    
     def thermal_update(self, timestep_id, subgrid_timestep_id):
         """This function is called each subgrid timestep of each timestep, and performs the thermal update of the model.
         The C-matrices are not updated as they are a function of only density.
@@ -1154,10 +1156,20 @@ class Simulation():
         # determine the courant-friedlichs-lewy number matrix
         self.cfl_matrix = self.k_matrix / self.soil_density_matrix * self.config.thermal.dt / self.dz**2
         
-        if np.max(self.cfl_matrix >= self.config.wrapper.CFL_thermal):
-            # raise ValueError(f"CFL should be smaller than {self.config.wrapper.CFL_thermal}, currently {np.max(self.cfl_matrix):.4f}")
-            # print(f"CFL should be smaller than 0.5, currently {np.max(self.cfl_matrix):.4f}")
-            pass
+        # pick volumetric heat capacity per state (J m^-3 K^-1)
+        Cvol_matrix = (
+            frozen_mask    * self.config.thermal.c_soil_frozen +
+            inbetween_mask * 0.5*(self.config.thermal.c_soil_frozen + self.config.thermal.c_soil_unfrozen) +
+            unfrozen_mask  * self.config.thermal.c_soil_unfrozen
+        )
+
+        # Fourier number (dimensionless)
+        Fo_matrix = (self.k_matrix / Cvol_matrix) * (self.config.thermal.dt / self.dz**2)
+        Fo_max = float(np.nanmax(Fo_matrix))
+        if Fo_max > 0.5:
+            raise ValueError(f"Thermal dt too large: max(Fo)={Fo_max:.3f} > 0.5. "
+                            f"Reduce dt to <= {0.5* self.dz**2 / np.nanmax(self.k_matrix / Cvol_matrix):.3e} s")
+
             
         # get the new enthalpy matrix
         self.enthalpy_matrix = self.enthalpy_matrix + \
@@ -1307,8 +1319,9 @@ class Simulation():
         self.heat_flux = self.heat_flux * self.heat_flux_factors
         
         # determine temperature of the ghost nodes
+        # Ghost-node Neumann BC is missing the factor of 2?
         ghost_nodes_temperature = self.temp_matrix[:,0] + self.heat_flux * self.dz / self.k_matrix[:,0]
-        
+
         return ghost_nodes_temperature
     
     def _update_water_level(self, timestep_id, subgrid_timestep_id=0):

@@ -2,6 +2,8 @@
 # Load modules
 from pathlib import Path
 import sys
+import cProfile
+import pstats
 from main import main, Simulation
 
 # Find path
@@ -9,7 +11,23 @@ proj_dir = Path(__file__).parent.resolve()
 if str(proj_dir) not in sys.path:
     sys.path.insert(0, str(proj_dir))
 
-# Run simulation
-sim = Simulation("runs/20250822_validation_runs/run001_val_gt22_v3", proj_dir=proj_dir)
-main(sim)
+# Profiling the simulation
+def run_with_profiling():
+    # Run simulation
+    sim = Simulation("runs/20250822_validation_runs/run002_testing", proj_dir=proj_dir)
+    main(sim)
 
+if __name__ == "__main__":
+    profiler = cProfile.Profile()
+    profiler.enable()
+    run_with_profiling()
+    profiler.disable()
+
+    # Save and print profiling results
+    with open("profile_results.txt", "w") as f:
+        stats = pstats.Stats(profiler, stream=f)
+        stats.strip_dirs()
+        stats.sort_stats("cumulative")  # Sort by cumulative time
+        stats.print_stats()
+
+    print("Profiling complete. Results saved to 'profile_results.txt'.")
