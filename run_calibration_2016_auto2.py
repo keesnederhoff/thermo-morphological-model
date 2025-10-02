@@ -15,13 +15,16 @@ import warnings
 import matplotlib.pyplot as plt
 import optuna
 import gc  # Import garbage collection module
-import ray
+import os
+import subprocess
+from pathlib import Path
+from memory_profiler import profile
 
+# Remove warning
 warnings.filterwarnings(
     "ignore",
     message="'squared' is deprecated in version 1.4 and will be removed in 1.6. To calculate the root mean squared error, use the function'root_mean_squared_error'."
 )
-import os
 
 # Ensure child processes use 'spawn' start method early (Windows-safe)
 try:
@@ -34,27 +37,48 @@ except Exception:
 # Parameter ranges
 param_ranges = {
     "max_depth": [10, 30],                              # 15m kind of in the middle
-    "T_melt": [270.4185, 275.8815],                     # a bit large of a range
-    "L_water_ice": [267200, 400800],                    # might be to high (330000-336000 range chatGPT)
+    "T_melt": [273.15*0.99, 273.15*1.01],                  # reduced range to +/- 10%
+    "L_water_ice": [33400000*0.9, 33400000*1.1],         # might be to high (330000-336000 range chatGPT)
     "rho_water": [1000, 1030],                          # might be too high (1000-1030 range chatGPT)
-    "rho_ice": [917*0.9, 917*1.1],                      # should be 917 (not 971 as Kevin used)
-    "rho_particle": [2120, 3180],                       # seems to high (2400-2900)
+    "rho_ice": [900, 930],                              # should be 917 (not 971 as Kevin used)
+    "rho_particle": [2400, 2800],                       # seems to high (2400-2900)
     "nb_min": [0.25, 0.78],                             # 0.30-0.55
     "nb_max": [0.25, 0.90],                             # 0.45-0.85
-    "c_soil_frozen": [3680000, 5520000],                # 2.0e6 to 3.5e5
-    "c_soil_unfrozen": [5600000, 8400000],              # 3.0e6 to 4.5e6
-    "k_soil_frozen_min": [0.7, 3.24],                   # 1-2
+    "c_soil_frozen": [1500000, 3000000],                # 2.0e6 to 3.5e5
+    "c_soil_unfrozen": [3000000, 4500000],              # 3.0e6 to 4.5e6
+    "k_soil_frozen_min": [0.7, 3.2],                   # 1-2
     "k_soil_frozen_max": [0.7, 3.7],                    # 2-3.5
-    "k_soil_unfrozen_min": [0.3, 1.6],                  # 0.3-1
-    "k_soil_unfrozen_max": [0.48, 1.5],                 # 1-2
+    "k_soil_unfrozen_min": [0.3, 1.5],                  # 0.3-1
+    "k_soil_unfrozen_max": [0.5, 1.5],                 # 1-2
     "geothermal_gradient": [0.02, 0.03]                 # seems good
 }
 
+# Initial parameter values for the first trial
+initial_params = {
+    "max_depth": 17,
+    "T_melt": 273.20958625714235,
+    "L_water_ice": 33397244.09467873,
+    "rho_water": 1011,
+    "rho_ice": 909,
+    "rho_particle": 2507,
+    "nb_min": 0.6765172730859592,
+    "nb_max": 0.4650727508760936,
+    "c_soil_frozen": 2191787,
+    "c_soil_unfrozen": 3677953,
+    "k_soil_frozen_min": 1.977012882177293,
+    "k_soil_frozen_max": 3.1623834172637997,
+    "k_soil_unfrozen_min": 0.37133649792783224,
+    "k_soil_unfrozen_max": 0.6151634408462469,
+    "geothermal_gradient": 0.025489813127888217
+}
+
 # Settings
-base_sim_dir    = Path(r'd:\Git\thermo-morphological-model\runs\20250822_calibration_runs\run006_iterations_automated\base')
-run_root_dir    = Path(r'd:\Git\thermo-morphological-model\runs\20250822_calibration_runs\run006_iterations_automated')
-n_parallel      = 1
-n_epochs        = 48        # maybe try 300 later?
+base_sim_dir    = Path(r'd:\Git\thermo-morphological-model\runs\20250822_calibration_runs\run009_iterations_automated_epoch300\base')
+run_root_dir    = Path(r'd:\Git\thermo-morphological-model\runs\20250822_calibration_runs\run009_iterations_automated_epoch300')
+n_parallel      = 5
+n_epochs        = 200       # shoot for 1000 epochs => will take a week (ASBPA week?)
+n_epochs        = 20        # maybe try 300 later if curent tests goes OK (maybe ~2 days => do on weekend)
+#n_epochs        = 10        # took 37 hours / 5 = ~7.4 hours
 make_figure     = True
 
 # 24 hours => 48 epochs since 30 minute per epoch
@@ -116,10 +140,44 @@ def to_native_datetime(dt):
         return dt
 
 # Run simulation and compute skill
+@profile
 def run_simulation(sim_dir):
-    proj_dir = Path(__file__).parent.resolve()
-    sim = Simulation(str(sim_dir), proj_dir=proj_dir)
-    main(sim, print_to_screen=False)
+
+    # Run simulations
+    #proj_dir = Path(__file__).parent.resolve()
+    #sim = Simulation(str(sim_dir), proj_dir=proj_dir)
+    #main(sim, print_to_screen=False)
+    #gc.collect()
+
+    # 1. Write the simulation logic to a separate script
+    simulation_script = Path(sim_dir) / "run_simulation_subprocess.py"
+    with open(simulation_script, "w") as f:
+        f.write('from pathlib import Path\n')
+        f.write('import sys\n')
+        f.write('proj_dir = Path(r"d:/Git/thermo-morphological-model")\n')
+        f.write('sys.path.insert(0, str(proj_dir))\n')
+        f.write('from main import main, Simulation\n')
+        f.write('import gc\n')
+        f.write(f"sim_dir = Path(r'{str(sim_dir).replace('\\', '/')}')\n")
+        f.write('sim = Simulation(str(sim_dir), proj_dir=proj_dir)\n')
+        f.write('main(sim, print_to_screen=False)\n')
+        f.write('gc.collect()\n')
+
+    # 2. Create the batch file
+    bat_file = Path(sim_dir) / "run_simulation.bat"
+    conda_env = "arctic-xbeach"  # <-- Change this to your conda environment name
+    with open(bat_file, "w") as f:
+        f.write(f'@echo off\n')
+        f.write(f'call conda activate {conda_env}\n')
+        f.write(f'python "{simulation_script}"\n')
+
+    # 3. Launch the batch file and wait for it to finish
+    subprocess.run([str(bat_file)], shell=True)
+
+    # 4. Continue with the rest of your logic
+    print(" => simulation finished, continuing with the rest of the script.")
+
+    # Try to read this
     nc_path = None
     try:
 
@@ -169,6 +227,7 @@ def run_simulation(sim_dir):
         }
 
         rmse_list = []
+        bias_list = []
         for col, depth_val in depth_map.items():
             
             # Find closest depth index in model output
@@ -177,13 +236,22 @@ def run_simulation(sim_dir):
             obs_temp        = df_val[col]
             rmse, mae, bias = compute_metrics(time_pd, model_temp, df_val['date_time'], obs_temp)
             rmse_list.append(rmse)
+            bias_list.append(bias)
+
+        # Write out rmse and bias of all layers to folder
+        with open(sim_dir / 'rmse_bias_layers.txt', 'w') as f:
+            for col, rmse_val, bias_val in zip(depth_map.keys(), rmse_list, bias_list):
+                f.write(f"{col}: RMSE={rmse_val:.4f}, Bias={bias_val:.4f}\n")
 
         # Combine numbers => simple compute mean
         rmse    = np.mean(rmse_list)
 
         # Another possiblity (more weight at top)
-        weights = np.linspace(1, 0.1, len(rmse_list))  # Example: linearly decreasing weights
-        rmse    = np.average(rmse_list, weights=weights)
+        # => let's not do this anymore
+        #weights = np.linspace(1, 0.1, len(rmse_list))  # Example: linearly decreasing weights
+        #rmse    = np.average(rmse_list, weights=weights)
+
+
 
         # Also make nice figure
         if make_figure is True:
@@ -248,30 +316,41 @@ def run_simulation(sim_dir):
             fig.tight_layout()
             fig.savefig(sim_dir / "temperature_layers.png", dpi=300)
             plt.close()
+        
+        # Explicitly delete large variables to help free memory
+        del time_py, time_pd
+        gc.collect()
+
+        # Finish
+        print('=> finished this iteration')
 
     except Exception as e:
         rmse = float('inf')
+
     finally:
         # Attempt to remove the NetCDF file after processing (ignore failures)
         try:
             if nc_path is not None and nc_path.exists():
-                #nc_path.unlink()
-                print('not removing anything anymore')
+                nc_path.unlink()
         except Exception:
             pass
     return rmse
 
 # Optuna objective moved to module level so it is picklable by multiprocessing
+@profile
 def objective(trial):
-    # Sample parameters using Optuna according to param_ranges
     params = {}
     for k, v in param_ranges.items():
-        if v[0] == v[1]:
-            params[k] = v[0]
-        elif isinstance(v[0], int) and isinstance(v[1], int):
-            params[k] = trial.suggest_int(k, int(v[0]), int(v[1]))
+        if isinstance(v[0], int) and isinstance(v[1], int):
+            if trial.number == 0:
+                params[k]   = initial_params[k] 
+            else:
+                params[k]   = trial.suggest_int(k, int(v[0]), int(v[1]))
         else:
-            params[k] = trial.suggest_float(k, float(v[0]), float(v[1]))
+            if trial.number == 0:
+                params[k]   = initial_params[k] 
+            else:
+                params[k]   = trial.suggest_float(k, float(v[0]), float(v[1]))
     
     # Derived parameter
     params["grid_resolution"] = params["max_depth"] * 10
@@ -366,9 +445,9 @@ if __name__ == "__main__":
             f.write(f"Failed to write trials dataframe: {e}\n")
 
     # Final summary and best params
-    best_trial = study.best_trial
+    best_trial  = study.best_trial
     best_params = best_trial.params
-    best_rmse = best_trial.value
+    best_rmse   = best_trial.value
 
     with open(print_log, "a", encoding="utf-8") as f:
         f.write(f"\nCalibration finished: {__import__('datetime').datetime.now()}\n")
@@ -384,18 +463,8 @@ if __name__ == "__main__":
     # Explicitly run garbage collection at the end
     gc.collect()
 
-    ray.init()
 
-    @ray.remote
-    def run_trial(trial_number, storage_url):
-        study = optuna.create_study(
-            study_name="calibration_optuna",
-            direction="minimize",
-            storage=storage_url,
-            load_if_exists=True
-        )
-        study.optimize(objective, n_trials=1, n_jobs=1)
 
-    tasks = [run_trial.remote(i, storage_url) for i in range(n_trials)]
-    ray.get(tasks)
-    ray.shutdown()
+
+# Done
+print('Done!')

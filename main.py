@@ -2,16 +2,15 @@ import os
 from pathlib import Path
 import sys
 import time
-
-from IPython import get_ipython
 import numpy as np
 import pandas as pd
-
 from utils.model import Simulation
 from utils.bathymetry import generate_schematized_bathymetry
 from utils.miscellaneous import textbox, datetime_from_timestamp
-
 import argparse, logging, logging.handlers, sys
+import matplotlib.pyplot as plt
+#from IPython import get_ipython
+
 
 # --- Simple logger setup (new) ---
 logger = logging.getLogger("thermo_model")
@@ -73,7 +72,7 @@ def main(sim, print_to_screen=True):
     
     # this variable is used to determine if xbeach should be ran for each timestep (not looking at 2% runup yet)
     xb_times = sim.timesteps_with_xbeach_active()
-    logger.debug("Succesfully generated xbeach times")
+    logger.debug("Succesfully generated times that we are going to run XBeach")
     
     # generate schematized bathymetry
     if sim.config.bathymetry.with_schematized_bathymetry:
@@ -114,11 +113,13 @@ def main(sim, print_to_screen=True):
         bathy_path=sim.config.bathymetry.depfile,
         bathy_grid_path=sim.config.bathymetry.xfile
         )
+    np.savetxt("x.grd", xgr)
+    np.savetxt("bed.dep", zgr)
     logger.debug("Succesfully generated grid")
     
     # initialize xbeach module
     sim.initialize_xbeach_module()
-    logger.debug("Succesfully initialized xbeach module")
+    logger.debug("Succesfully initialized XBeach module")
     
     # initialize first xbeach timestep
     if sim.config.xbeach.with_xbeach:
@@ -126,6 +127,16 @@ def main(sim, print_to_screen=True):
     else:
         sim.xbeach_times[0] = 0
     
+    # Check R2% criteria
+    try:
+        return_code, r2_percentage_with_ice, r2_values_wanted1, r2_values_wanted2 = sim.check_r2_criteria()
+        if return_code == 1:
+            logger.info(f"You are expected to run ~{r2_percentage_with_ice * 100:.2f}% of XBeach simulations")
+            logger.info(f"Suggest reducing the threshold to {r2_values_wanted1:.2f} or {r2_values_wanted2:.2f}")
+    except Exception as e:
+        logger.error(f"Failed to check R2% criteria: {e}")
+        return_code = 2
+
     # initialize thermal model
     sim.initialize_thermal_module()
     logger.debug("Succesfully initialized thermal module")
@@ -145,18 +156,19 @@ def main(sim, print_to_screen=True):
     # show CFL values (they have already been checked to be below 0.5)
     logger.debug(f"Current maximum CFL {np.max(sim.cfl_matrix):.4f}")
 
-    # loop through (xbeach) timesteps
+    # Get spin-up time in years (default 0)
+    spinup_years    = getattr(sim.config.model, 'spin_up_time', 0)
+    spinup_seconds  = spinup_years * 365.25 * 24 * 3600
     logger.info("Starting Arctic-XBeach")
-    
+
     ################################################
     ##                                            ##
     ##            # MAIN LOOP                     ##
     ##                                            ##
     ################################################
-    
+
     last_progress_info = -1  # Track last percentage logged at 5% intervals
     for timestep_id in np.arange(len(sim.T)):
-        
         # Count timesteps
         logger.debug(f"Timestep {timestep_id+1}/{len(sim.T)}")
 
@@ -167,7 +179,7 @@ def main(sim, print_to_screen=True):
             remaining_steps = len(sim.T) - (timestep_id + 1)
             eta_seconds = avg_step_time * remaining_steps
             progress_pct = int(((timestep_id + 1) / len(sim.T)) * 100)
-            if progress_pct % 5 == 0 and progress_pct != last_progress_info:
+            if progress_pct % 1 == 0 and progress_pct != last_progress_info:
                 eta_hours = eta_seconds / 3600
                 if eta_hours < 1:
                     logger.info(f"Progress {progress_pct}% | avg_step={avg_step_time:.1f}s | {sim.timestamps[timestep_id]} | ETA ~ {eta_hours * 60:.2f}min")
@@ -182,81 +194,75 @@ def main(sim, print_to_screen=True):
 
         # used for validation of the temperature model
         if 'save_ground_temp_layers' in sim.config.output.keys():
-            
             sim.save_ground_temp_layers_in_memory(
                 timestep_id, 
                 layers=sim.config.output.save_ground_temp_layers,
                 heat_fluxes=sim.config.output.heat_fluxes,
                 write=(timestep_id == np.arange(len(sim.T))[-1]),
                 )
-        
+
+        # Calculate elapsed simulation time in seconds
+        elapsed_sim_seconds = (sim.timestamps[timestep_id] - sim.timestamps[0]) / pd.Timedelta("1s")
+
         # check whether to run XBeach or not for this timestep
-        if sim.config.xbeach.with_xbeach and not all(np.abs(sim.thaw_depth) < 0.001):
+        if elapsed_sim_seconds < spinup_seconds:
+            # During spin-up, do not run XBeach or update morphology
+            sim.xbeach_times[timestep_id] = 0
+            logger.debug(f"Spinup for {sim.timestamps[timestep_id]} - so never running XBeach")
+        elif sim.config.xbeach.with_xbeach and not all(np.abs(sim.thaw_depth) < 0.001) and getattr(sim.xbeach.with_xbeach, 'True', 'True'):
             sim.xbeach_times[timestep_id] = sim.check_xbeach(timestep_id)
         else:
             sim.xbeach_times[timestep_id] = 0
-            
+
         # check if xbeach is enabled for current timestep
         if sim.xbeach_times[timestep_id] and sim.config.xbeach.with_xbeach:
-            
             # export current thaw depth to a file
             sim.write_ne_layer()
-                        
-             # generate params.txt file 
+            # generate params.txt file 
             sim.xbeach_setup(timestep_id)
-            
-            logger.info(f"Starting xbeach for timestep {sim.timestamps[timestep_id]}")
-            
+            logger.debug(f"Starting XBeach for timestep {sim.timestamps[timestep_id]}")
             # call xbeach (could include batch file?)
             run_succesful = sim.start_xbeach(
-                os.path.join(sim.proj_dir, Path("xbeach/XBeach_1.24.6057_Halloween_win64_netcdf/xbeach.exe")),
-                sim.cwd
+                os.path.join(sim.proj_dir, Path(sim.config.xbeach.version)),
+                sim.cwd,
+                timestep_id=timestep_id
             )
-            
             try:
                 if run_succesful:
-                    logger.info(f"succesfully ran xbeach for timestep {sim.timestamps[timestep_id]} to {sim.timestamps[timestep_id+1]}")
+                    logger.debug(f"Succesfully ran XBeach for timestep {sim.timestamps[timestep_id]} to {sim.timestamps[timestep_id+1]}")
                 else:
-                    logger.error(f"failed to run xbeach for timestep {sim.timestamps[timestep_id]} to {sim.timestamps[timestep_id+1]}")
+                    logger.error(f"Failed to run XBeach for timestep {sim.timestamps[timestep_id]} to {sim.timestamps[timestep_id+1]}")
             except IndexError:
-                logger.info(f"xbeach ran succesfully for final timestep timestep ({sim.timestamps[timestep_id]})")
-                        
-            # if this was one of the first storms, the output is of higher temporal resolution and it is saved in the results folder
-            if sim.copy_this_xb_output:
-                sim.copy_xb_output_to_result_dir(fp_xbeach_output="xboutput.nc")
-                logger.info("succesfully generated high resolution storm output")
-                
+                logger.info(f"XBeach ran succesfully for final timestep timestep ({sim.timestamps[timestep_id]})")
             # check if xbeach should be ran for the next timestep (if so, the x-grid doesn't update since the same grid is necessary for the hotstart feature)
-            if sim.config.xbeach.with_xbeach and timestep_id + 1 < len(sim.T):
-                sim.xbeach_times[timestep_id + 1] = sim.check_xbeach(timestep_id + 1)
-            else:
-                sim.xbeach_times[timestep_id + 1] = 0
-                        
+            if timestep_id + 1 < len(sim.T):
+                if sim.config.xbeach.with_xbeach:
+                    sim.xbeach_times[timestep_id + 1] = sim.check_xbeach(timestep_id + 1)
+                else:
+                    sim.xbeach_times[timestep_id + 1] = 0
             # copy updated morphology to thermal module, and update the thermal grid with the new morphology
             sim.update_grid(timestep_id, fp_xbeach_output="xboutput.nc")  # this thing right here is pretty slow (TO BE CHANGED)
-            
-            # copy all xb output to the results folder 
-            # # (this is necessary as the xb output in the run folder will be overwritten after the next xb iteration)
-            sim.dump_xb_output(timestep_id)
-        
+
         # loop through thermal subgrid timestep
         for subgrid_timestep_id in np.arange(0, config.model.timestep * 3600, config.thermal.dt):
             sim.thermal_update(timestep_id, subgrid_timestep_id)
-            
         # calculate the current thaw depth
         sim.find_thaw_depth()
-            
+
     # write xbeach timesteps
-    sim.write_xb_timesteps()
     logger.info('Arctic-XBeach Finished!')
     logger.info(f"Simulation started at: {datetime_from_timestamp(t_start)}")
     logger.info(f"Simulation finished at: {datetime_from_timestamp(time.time())}")
     logger.info(f"Total simulation time: {(time.time() - t_start) / 1:.1f} seconds")
     logger.info(f"Total simulation time: {(time.time() - t_start) / 60:.1f} minutes")
     logger.info(f"Total simulation time: {(time.time() - t_start) / 3600:.1f} hours")
+    
     # Add this line to ensure NetCDF is closed and flushed
     if sim.nc_writer is not None:
         sim.nc_writer.close()
+
+    # Clean up memory
+    sim.cleanup()
 
     return sim.xgr, sim.zgr
 

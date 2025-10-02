@@ -10,7 +10,7 @@ import matplotlib as mpl
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 
 # Settings
-outdir = Path(r'd:\Git\thermo-morphological-model\runs\20250822_calibration_runs\run001_cal_gt61\analysis')
+outdir = Path(r'd:\Git\thermo-morphological-model\runs\20250822_calibration_runs\run006_iterations_automated\optuna_trial_000007')
 outdir.mkdir(exist_ok=True)
 mpl.rcdefaults()
 

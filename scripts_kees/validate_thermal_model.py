@@ -7,9 +7,10 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
 # Settings
-outdir = Path(r'd:\Git\thermo-morphological-model\runs\20250822_validation_runs\run002_kevin_values\analysis')
+outdir = Path(r'd:\Git\thermo-morphological-model\runs\20250822_validation_runs\run003_calibrated_values_v8_33')
 outdir.mkdir(exist_ok=True)
 mpl.rcdefaults()
+
 ## Part 1 - Load data
 df_erikson = pd.read_csv(r'd:\Git\thermo-morphological-model\database\ts_datasets\ground_temperature_erikson.csv', parse_dates=['time'])
 
@@ -19,8 +20,18 @@ colnames = ['air_temp[K]', 'temp_0.0m[K]', 'temp_0.5m[K]', 'temp_1.0m[K]', 'temp
 for colname in colnames:
     df_model[f'{colname[:-3]}[C]'] = df_model[colname] - 273.15
 
-# Compute skill
-# ...existing code...
+# Also load 2D profile of temperature
+from netCDF4 import Dataset
+import numpy as np
+
+nc_path = r'd:\Git\thermo-morphological-model\runs\20250822_validation_runs\run003_calibrated_values_v8_33\results\results.nc'
+
+with Dataset(nc_path, 'r') as nc:
+    zgr = nc.variables['zgr'][:]  # depth grid
+    xgr = nc.variables['xgr'][:]  # horizontal grid
+    ground_temperature_distribution = nc.variables['ground_temperature_distribution'][:]  # shape: [time, depth, x]
+    depth_id = nc.variables['depth_id'][:]  # depth indices or values
+    time = nc.variables['time'][:]  # time variable (may need conversion)
 
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 
@@ -125,4 +136,50 @@ for i, ax in enumerate(axs):
 fig.suptitle("Temperature at different soil layers (modeled vs observed)", fontsize=16)
 fig.savefig(outdir / "temperature_layers.png", dpi=300)
 plt.close()
+
+
+
+## Make plot where we plot the temperature as 2D matrix (depth and time)
+time_origin = pd.Timestamp('2001-01-01')
+time_seconds = np.array(time)  # Ensure it's a numpy array, not masked
+time_dt = time_origin + pd.to_timedelta(time_seconds, unit='s')
+
+# Make depth
+depths = depth_id*-0.1
+
+# ground_temperature_distribution shape: [time, depth, x]
+temp_2d = np.squeeze(ground_temperature_distribution[:, 1, :]) - 273.15  # Convert from K to C
+
+fig, ax = plt.subplots(figsize=(11.69, 8.27/2))
+im = ax.pcolormesh(time_dt, depths, temp_2d.T, shading='auto', cmap='coolwarm', vmin=-10, vmax=2)
+#contour = ax.contour(time_dt, depths, temp_2d.T, levels=[0], colors='black', linewidths=20)
+#ax.clabel(contour, fmt='%d°C', colors='black')
+cbar = fig.colorbar(im, ax=ax, label='Temperature [°C]')
+ax.set_xlabel('Time')
+ax.set_ylabel('Depth [m]')
+ax.set_title('Ground Temperature (Depth vs Time): Arctic XBeach Model and Observations')
+ax.set_xlim(pd.Timestamp('2011-05-01'), pd.Timestamp('2011-11-01'))
+
+# Overlay observations as circles (example for 0.5m, 1.0m, 2.0m, 2.95m)
+obs_depths = [0.5, 1.0, 2.0, 2.95]
+obs_cols = ['T50cm', 'T100cm', 'T200cm', 'T295cm']
+for depth, col in zip(obs_depths, obs_cols):
+    depth = depth*-1
+    df_thin = df_erikson.iloc[::24]
+    ax.scatter(
+        df_thin['time'],
+        [depth]*len(df_thin),
+        c=df_thin[col],
+        cmap='coolwarm',
+        edgecolor='black',
+        s=40,
+        label=f'Obs {depth}m',
+        vmin=-10,
+        vmax=2
+    )
+ax.set_ylim(-5, -0.1)
+ax.legend(loc='upper right')
+fig.tight_layout()
+fig.savefig(outdir / "temperature_2D_depth_time.png", dpi=300)
+plt.close(fig)
 
