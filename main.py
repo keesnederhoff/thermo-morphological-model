@@ -167,7 +167,7 @@ def main(sim, print_to_screen=True):
     ##                                            ##
     ################################################
 
-    last_progress_info = -1  # Track last percentage logged at 5% intervals
+    last_progress_info = -1  # Track last percentage logged at 1% intervals
     for timestep_id in np.arange(len(sim.T)):
         # Count timesteps
         logger.debug(f"Timestep {timestep_id+1}/{len(sim.T)}")
@@ -187,19 +187,6 @@ def main(sim, print_to_screen=True):
                     logger.info(f"Progress {progress_pct}% | avg_step={avg_step_time:.1f}s | {sim.timestamps[timestep_id]} | ETA ~ {eta_hours:.2f}h")
                 last_progress_info = progress_pct
 
-        # write output variables to output file every output interval
-        if timestep_id in sim.temp_output_ids:
-            sim.write_output(timestep_id, t_start)
-            logger.debug("Succesfully generated output")
-
-        # used for validation of the temperature model
-        if 'save_ground_temp_layers' in sim.config.output.keys():
-            sim.save_ground_temp_layers_in_memory(
-                timestep_id, 
-                layers=sim.config.output.save_ground_temp_layers,
-                heat_fluxes=sim.config.output.heat_fluxes,
-                write=(timestep_id == np.arange(len(sim.T))[-1]),
-                )
 
         # Calculate elapsed simulation time in seconds
         elapsed_sim_seconds = (sim.timestamps[timestep_id] - sim.timestamps[0]) / pd.Timedelta("1s")
@@ -209,10 +196,8 @@ def main(sim, print_to_screen=True):
             # During spin-up, do not run XBeach or update morphology
             sim.xbeach_times[timestep_id] = 0
             logger.debug(f"Spinup for {sim.timestamps[timestep_id]} - so never running XBeach")
-        elif sim.config.xbeach.with_xbeach and not all(np.abs(sim.thaw_depth) < 0.001) and getattr(sim.xbeach.with_xbeach, 'True', 'True'):
-            sim.xbeach_times[timestep_id] = sim.check_xbeach(timestep_id)
         else:
-            sim.xbeach_times[timestep_id] = 0
+            sim.xbeach_times[timestep_id] = sim.check_xbeach(timestep_id)
 
         # check if xbeach is enabled for current timestep
         if sim.xbeach_times[timestep_id] and sim.config.xbeach.with_xbeach:
@@ -246,8 +231,23 @@ def main(sim, print_to_screen=True):
         # loop through thermal subgrid timestep
         for subgrid_timestep_id in np.arange(0, config.model.timestep * 3600, config.thermal.dt):
             sim.thermal_update(timestep_id, subgrid_timestep_id)
+
         # calculate the current thaw depth
         sim.find_thaw_depth()
+
+        # write output variables to output file every output interval
+        if timestep_id in sim.temp_output_ids:
+            sim.write_output(timestep_id, t_start)
+            logger.debug("Succesfully generated output")
+
+        # used for validation of the temperature model
+        if 'save_ground_temp_layers' in sim.config.output.keys():
+            sim.save_ground_temp_layers_in_memory(
+                timestep_id, 
+                layers=sim.config.output.save_ground_temp_layers,
+                heat_fluxes=sim.config.output.heat_fluxes,
+                write=(timestep_id == np.arange(len(sim.T))[-1]),
+                )
 
     # write xbeach timesteps
     logger.info('Arctic-XBeach Finished!')

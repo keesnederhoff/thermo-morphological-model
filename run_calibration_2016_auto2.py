@@ -37,7 +37,7 @@ except Exception:
 # Parameter ranges
 param_ranges = {
     "max_depth": [10, 30],                              # 15m kind of in the middle
-    "T_melt": [273.15*0.99, 273.15*1.01],                  # reduced range to +/- 10%
+    "T_melt": [273.15, 273.15],                         # no variation
     "L_water_ice": [33400000*0.9, 33400000*1.1],         # might be to high (330000-336000 range chatGPT)
     "rho_water": [1000, 1030],                          # might be too high (1000-1030 range chatGPT)
     "rho_ice": [900, 930],                              # should be 917 (not 971 as Kevin used)
@@ -56,7 +56,7 @@ param_ranges = {
 # Initial parameter values for the first trial
 initial_params = {
     "max_depth": 17,
-    "T_melt": 273.20958625714235,
+    "T_melt": 273.15,
     "L_water_ice": 33397244.09467873,
     "rho_water": 1011,
     "rho_ice": 909,
@@ -73,12 +73,10 @@ initial_params = {
 }
 
 # Settings
-base_sim_dir    = Path(r'd:\Git\thermo-morphological-model\runs\20250822_calibration_runs\run009_iterations_automated_epoch300\base')
-run_root_dir    = Path(r'd:\Git\thermo-morphological-model\runs\20250822_calibration_runs\run009_iterations_automated_epoch300')
+base_sim_dir    = Path(r'd:\Git\thermo-morphological-model\runs\20250822_calibration_runs\run010_iterations_automated_epoch100\base')
+run_root_dir    = Path(r'd:\Git\thermo-morphological-model\runs\20250822_calibration_runs\run010_iterations_automated_epoch100')
 n_parallel      = 5
-n_epochs        = 200       # shoot for 1000 epochs => will take a week (ASBPA week?)
 n_epochs        = 20        # maybe try 300 later if curent tests goes OK (maybe ~2 days => do on weekend)
-#n_epochs        = 10        # took 37 hours / 5 = ~7.4 hours
 make_figure     = True
 
 # 24 hours => 48 epochs since 30 minute per epoch
@@ -95,10 +93,49 @@ def sample_params():
         else:
             params[k] = random.uniform(v[0], v[1])
     
+    # Enforce constraints: min values should never be lower than max values
+    # For nb (porosity) parameters
+    if params["nb_min"] < params["nb_max"]:
+        # Swap values to ensure min >= max
+        params["nb_min"], params["nb_max"] = params["nb_max"], params["nb_min"]
+    
+    # For frozen soil thermal conductivity parameters
+    if params["k_soil_frozen_min"] < params["k_soil_frozen_max"]:
+        # Swap values to ensure min >= max
+        params["k_soil_frozen_min"], params["k_soil_frozen_max"] = params["k_soil_frozen_max"], params["k_soil_frozen_min"]
+    
+    # For unfrozen soil thermal conductivity parameters
+    if params["k_soil_unfrozen_min"] < params["k_soil_unfrozen_max"]:
+        # Swap values to ensure min >= max
+        params["k_soil_unfrozen_min"], params["k_soil_unfrozen_max"] = params["k_soil_unfrozen_max"], params["k_soil_unfrozen_min"]
+    
     # Overwrite some of them
     params["grid_resolution"] = params["max_depth"] * 10
 
     # Done
+    return params
+
+# Apply parameter constraints to ensure min >= max for parameter pairs
+def apply_parameter_constraints(params):
+    """
+    Apply constraints to ensure minimum values are never lower than maximum values.
+    This function modifies the params dictionary in-place.
+    """
+    # For nb (porosity) parameters
+    if params["nb_min"] < params["nb_max"]:
+        # Swap values to ensure min >= max
+        params["nb_min"], params["nb_max"] = params["nb_max"], params["nb_min"]
+    
+    # For frozen soil thermal conductivity parameters
+    if params["k_soil_frozen_min"] < params["k_soil_frozen_max"]:
+        # Swap values to ensure min >= max
+        params["k_soil_frozen_min"], params["k_soil_frozen_max"] = params["k_soil_frozen_max"], params["k_soil_frozen_min"]
+    
+    # For unfrozen soil thermal conductivity parameters
+    if params["k_soil_unfrozen_min"] < params["k_soil_unfrozen_max"]:
+        # Swap values to ensure min >= max
+        params["k_soil_unfrozen_min"], params["k_soil_unfrozen_max"] = params["k_soil_unfrozen_max"], params["k_soil_unfrozen_min"]
+    
     return params
 
 # Update yaml
@@ -351,6 +388,9 @@ def objective(trial):
                 params[k]   = initial_params[k] 
             else:
                 params[k]   = trial.suggest_float(k, float(v[0]), float(v[1]))
+    
+    # Apply parameter constraints to ensure min >= max relationships
+    apply_parameter_constraints(params)
     
     # Derived parameter
     params["grid_resolution"] = params["max_depth"] * 10

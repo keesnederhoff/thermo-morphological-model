@@ -306,17 +306,10 @@ class Simulation():
         
         # Initialize zero conditions
         self.zero_conditions = {
-                    # "Hso(m)": 0.001,
-                    # "Hs(m)": 0.001,
                     "Hso(m)": 0.05,  # placeholder
                     "Hs(m)": 0.05,  # placeholder
-                    # "Hso(m)": 0,
-                    # "Hs(m)": 0,
                     "Dp(deg)": 270,                    
-                    # "Dp(deg)": 0,
                     "Tp(s)": 2,
-                    # "Tp(s)": 0,
-                    # "WL(m)": 0,
                     "Hindcast_or_projection": 0,
                     }
         
@@ -370,10 +363,6 @@ class Simulation():
         
         # get sea-ice timestep ids
         self.xbeach_sea_ice = self._when_xbeach_no_sea_ice(self.config.wrapper.sea_ice_threshold)
-        
-        # xbeach is not ran during spin_up
-        # self.no_xb_spinup = np.zeros(self.T.shape)
-        # self.no_xb_spinup[len(self.T) / self.config.model.repeat_sim]
         
         # initialize xbeach storms array
         self.xbeach_storms = np.zeros(self.xbeach_inter.shape)
@@ -446,8 +435,6 @@ class Simulation():
             # if there's only one point in the envelope then dx will be 0, so go ahead with the except block as well
             if dx == 0:
                 raise ValueError
-            
-            # print('normal computation')
         
         # and in that case, the local angle of the two grid points nearest to the water level is used
         except ValueError:
@@ -463,14 +450,10 @@ class Simulation():
             
             x1, z1 = self.xgr[first_dry_id], self.zgr[first_dry_id]
             x2, z2 = self.xgr[last_wet_id], self.zgr[last_wet_id]
-            
-            # x1, x2 = self.xgr[wet_mask[-1]], self.xgr[dry_mask[0]]
-            # z1, z2 = self.zgr[wet_mask[-1]], self.zgr[dry_mask[0]]
-            
+        
             dz = z2 - z1
             dx = x2 - x1
-            
-            # print('alternate computation')
+
             
         # compute beta_f            
         self.beta_f[timestep_id] = np.abs(dz / dx)
@@ -480,16 +463,7 @@ class Simulation():
         
         run_xb_storm = int(self.R2[timestep_id] + wl > self.config.wrapper.xb_threshold)
         
-        # print(wl)
-        # print(z_envelope)
-        # print(x_envelope)
-        
-        # print(x1, x2)
-        # print(z1, z2)
-        
-        # print(self.beta_f[timestep_id])
-        # print(self.R2[timestep_id])
-        
+
         return run_xb_storm
     
     def check_xbeach(self, timestep_id):
@@ -502,9 +476,13 @@ class Simulation():
             int: whether or not to run XBeach. 1 if yes, 0 if no.
         """
         
+        # Check the standard procecdure
         self.xbeach_storms[timestep_id] = self._when_xbeach_storms(timestep_id)
-        
-        self.xbeach_times[timestep_id] = self.xbeach_inter[timestep_id] + self.xbeach_sea_ice[timestep_id] * self.xbeach_storms[timestep_id]
+        self.xbeach_times[timestep_id]  = self.xbeach_inter[timestep_id] + self.xbeach_sea_ice[timestep_id] * self.xbeach_storms[timestep_id]
+
+        # However, only if there is any thaw depth larger than 0, other not
+        if np.any(self.thaw_depth > 0.0):
+            self.xbeach_times[timestep_id] = 0.0
                 
         return self.xbeach_times[timestep_id]
     
@@ -1019,120 +997,30 @@ class Simulation():
         return self.A_matrix
     
     def _generate_initial_ground_temperature_distribution(self, df, t_start, n, max_depth):
-        """This method generates an initial ground temperature distribution using soil temperature in different layers (read from 'df'),
-        at the first time step 't_start'. The depth between 0 and 'max_depth' is divided in 'n' grid points.
+        """This method generates an initial ground temperature distribution using soil temperature in different layers from ERA5 data.
         
-        The ECMWF Integrated Forecasting System (IFS) has a four-layer representation of soil, where the surface is at 0cm: 
+        The ECMWF ERA5 dataset has a four-layer representation of soil:
         Layer 1: 0 - 7cm, 
         Layer 2: 7 - 28cm, 
         Layer 3: 28 - 100cm, 
         Layer 4: 100 - 289cm. 
-        Soil temperature is set at the middle of each layer, and heat transfer is calculated at the interfaces between them. 
-        It is assumed that there is no heat transfer out of the bottom of the lowest layer. Soil temperature is defined over the whole globe, 
-        even over ocean. Regions with a water surface can be masked out by only considering grid points where the land-sea mask has a value greater than 0.5. 
-        This parameter has units of kelvin (K). Temperature measured in kelvin can be converted to degrees Celsius (°C) by subtracting 273.15.
         
-        Temperature is linearly interpolated for the entire depth, and assumed constant below the center of Layer 4, as well as constant above the center 
-        of layer 1. We differentiate between wet and dry initial conditions, assuming sea level at z=0. A maximum depth of 3m is assumed, with no heat 
-        exchange from the lower layers.
+        Temperature is linearly interpolated for the entire depth, and assumed constant below the center of Layer 4.
+        Same temperature profile is used for both wet and dry points.
         """                                    
-        if "initial_ground_temp_path" not in self.config.data.keys(): 
-            
-            if "init_multi_linear_approx" in self.config.data.keys() and self.config.data.init_multi_linear_approx:
-            
-                # The temperature of the dry points can be reconstructed following the BLUE performed in database/erikson_ground_temp.ipynb
-                def reconstruct_initial_conditions_era5(era5_points, X_hat_all, level):
-                    """Takes ERA5 temperature data at the four defined levels and uses previously determined coefficients (from multi-linear 
-                    regression, see notebook 'erikson_ground_tmep.ipynb') to compute better initial conditions from ERA5.
-
-                    Args:
-                        era5_points (array): array of length 4 with temperatures from ERA5 data (in Celcius!)
-                        X_hat_all (array): array of length 5 with coefficients
-                        level (int): current level to compute the reconstructed temperature for
-
-                    Returns:
-                        float: reconstructed temperature for the specified depth (in K)
-                    """
-                    
-                    T1_era5, T2_era5, T3_era5, T4_era5 = era5_points
-                    
-                    level_to_index = {'50': 0, '100':1, '200': 2, '295': 3}
-                    
-                    i = level_to_index[str(int(level))]
-                    
-                    reconstructed_ic = \
-                        X_hat_all[i][0] * T1_era5 + \
-                        X_hat_all[i][1] * T2_era5 + \
-                        X_hat_all[i][2] * T3_era5 + \
-                        X_hat_all[i][3] * T4_era5 + \
-                        X_hat_all[i][4] + \
-                        273.15  # Celcius to Kelvin
-                    
-                    return reconstructed_ic
-                
-                # Start with loading in the X_hat
-                X_hat_all = np.loadtxt(os.path.join(self.proj_dir, Path(r'database\ts_datasets\X_hat_groundtemp_reconstruct.txt')))
-                
-                era5_points = np.array([
-                    df.soil_temperature_level_1.values[0] - 273.15,
-                    df.soil_temperature_level_2.values[0] - 273.15,
-                    df.soil_temperature_level_3.values[0] - 273.15,
-                    df.soil_temperature_level_4.values[0] - 273.15
-                ])
-                
-                dry_points = np.array([
-                    [0.0, reconstruct_initial_conditions_era5(era5_points, X_hat_all, 50)],
-                    [0.5, reconstruct_initial_conditions_era5(era5_points, X_hat_all, 50)],
-                    [1.0, reconstruct_initial_conditions_era5(era5_points, X_hat_all, 100)],
-                    [2.0, reconstruct_initial_conditions_era5(era5_points, X_hat_all, 200)],
-                    [2.95, reconstruct_initial_conditions_era5(era5_points, X_hat_all, 295)],
-                    [max_depth, reconstruct_initial_conditions_era5(era5_points, X_hat_all, 295)],
-                ])
-            
-            else:
-                
-                dry_points = np.array([
-                    [0, df.soil_temperature_level_1.values[0]],
-                    [(0.07+0)/2, df.soil_temperature_level_1.values[0]],
-                    [(0.28+0.07)/2, df.soil_temperature_level_2.values[0]],
-                    [(1+0.28)/2, df.soil_temperature_level_3.values[0]],
-                    [(2.89+1)/2, df.soil_temperature_level_4.values[0]],
-                    [max_depth, df.soil_temperature_level_4.values[0]],
-                ])
-            
-            wet_points = np.array([
-                [0, df.soil_temperature_level_1_offs.values[0]],
-                [(0.07+0)/2, df.soil_temperature_level_1_offs.values[0]],
-                [(0.28+0.07)/2, df.soil_temperature_level_2_offs.values[0]],
-                [(1+0.28)/2, df.soil_temperature_level_3_offs.values[0]],
-                [(2.89+1)/2, df.soil_temperature_level_4_offs.values[0]],
-                [max_depth, df.soil_temperature_level_4_offs.values[0]],
-            ])
-            
-        else:
-            
-            # read data into dataframe
-            df = pd.read_csv(os.path.join(self.proj_dir, self.config.data.initial_ground_temp_path), parse_dates=['time'])
-                        
-            # select correct row
-            mask = (df['time'] == t_start)
-            df = df[mask]
-                        
-            # read in points
-            dry_points = np.array([
-                [0.0, df['T50cm'].values[0] + 273.15],
-                [0.5, df['T50cm'].values[0] + 273.15],
-                [1.0, df['T100cm'].values[0] + 273.15],
-                [2.0, df['T200cm'].values[0] + 273.15],
-                [2.95, df['T295cm'].values[0] + 273.15],
-                [max_depth, df['T295cm'].values[0] + 273.15],
-            ])
-            
-            wet_points = dry_points
-            
-            
-        ground_temp_distr_dry = um.interpolate_points(dry_points[:,0], dry_points[:,1], n)
-        ground_temp_distr_wet = um.interpolate_points(wet_points[:,0], wet_points[:,1], n)
+        # Use ERA5 soil temperature data directly
+        era5_points = np.array([
+            [0, df.soil_temperature_level_1.values[0]],
+            [(0.07+0)/2, df.soil_temperature_level_1.values[0]],
+            [(0.28+0.07)/2, df.soil_temperature_level_2.values[0]],
+            [(1+0.28)/2, df.soil_temperature_level_3.values[0]],
+            [(2.89+1)/2, df.soil_temperature_level_4.values[0]],
+            [max_depth, df.soil_temperature_level_4.values[0]],
+        ])
+        
+        # Same temperature distribution for both dry and wet points
+        ground_temp_distr_dry = um.interpolate_points(era5_points[:,0], era5_points[:,1], n)
+        ground_temp_distr_wet = ground_temp_distr_dry.copy()
         
         return ground_temp_distr_dry, ground_temp_distr_wet
     
@@ -1859,8 +1747,10 @@ class Simulation():
             i = len(self.nc_writer.v["time"])  # next index
         else:
             i = 0
+        # Count how many XBeach timesteps have been written so far
+        # For output: count previous XBeach runs (excluding current) to get correct index
         if "time_xbeach" in self.nc_writer.v:
-            i_xb = len(self.nc_writer.v["time_xbeach"])  # next index
+            i_xb = sum(self.xbeach_times[:timestep_id] == 1.0)
         else:
             i_xb = 0
 
@@ -1950,7 +1840,8 @@ class Simulation():
         
         # append XBeach parameters (use "time_xbeach" dimension)
         # Only write XBeach data if XBeach was run for this timestep
-        if self.xbeach_times[timestep_id]:
+        if (self.xbeach_times[timestep_id] == 1.0):
+            print('printing')
             # Use a separate index for XBeach time (could be fewer timesteps)
             self.nc_writer.append(i_xb, {
                 "time_xbeach": t_rel,

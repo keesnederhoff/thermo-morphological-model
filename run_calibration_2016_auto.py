@@ -20,9 +20,9 @@ warnings.filterwarnings(
 
 # Parameter ranges
 param_ranges = {
-    "max_depth": [15, 15],                              # 15m kind of in the middle
-    "T_melt": [270.4185, 275.8815],                     # a bit large of a range
-    "N_thaw_threshold": [2, 40],                        # seems ok, shouldnt have a influence i think
+    "max_depth": [20, 30],                              # 15m kind of in the middle
+    "T_melt": [273.15, 273.15],                         # a bit large of a range
+    "N_thaw_threshold": [3, 3],                         # seems ok, shouldnt have a influence i think
     "L_water_ice": [267200, 400800],                    # might be to high (330000-336000 range chatGPT)
     "rho_water": [800, 1200],                           # might be too high (1000-1030 range chatGPT)
     "rho_ice": [917*0.9, 917*1.1],                      # should be 917 (not 971 as Kevin used)
@@ -58,6 +58,22 @@ def sample_params():
             params[k] = random.randint(v[0], v[1])
         else:
             params[k] = random.uniform(v[0], v[1])
+    
+    # Enforce constraints: min values should be higher than max values
+    # For nb (porosity) parameters
+    if params["nb_min"] <= params["nb_max"]:
+        # Swap values to ensure min > max
+        params["nb_min"], params["nb_max"] = params["nb_max"], params["nb_min"]
+    
+    # For frozen soil thermal conductivity parameters
+    if params["k_soil_frozen_min"] <= params["k_soil_frozen_max"]:
+        # Swap values to ensure min > max
+        params["k_soil_frozen_min"], params["k_soil_frozen_max"] = params["k_soil_frozen_max"], params["k_soil_frozen_min"]
+    
+    # For unfrozen soil thermal conductivity parameters
+    if params["k_soil_unfrozen_min"] <= params["k_soil_unfrozen_max"]:
+        # Swap values to ensure min > max
+        params["k_soil_unfrozen_min"], params["k_soil_unfrozen_max"] = params["k_soil_unfrozen_max"], params["k_soil_unfrozen_min"]
     
     # Overwrite some of them
     params["grid_resolution"] = params["max_depth"] * 10
